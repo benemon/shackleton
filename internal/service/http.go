@@ -243,6 +243,10 @@ func terminal(event store.Event) bool {
 }
 
 func writeInvestigationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrInvalidID) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if errors.Is(err, fs.ErrNotExist) {
 		writeError(w, http.StatusNotFound, "investigation not found")
 		return

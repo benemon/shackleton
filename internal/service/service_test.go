@@ -597,3 +597,44 @@ func TestHTTPIngestAlertsAcceptsRealPayloadShape(t *testing.T) {
 		t.Fatalf("malformed payload status = %d", response.Code)
 	}
 }
+
+func TestInvalidInvestigationIDReturns400(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHTTP(New(context.Background(), audit, nil, nil), "token")
+	for _, path := range []string{"/v1/investigations/..%2Fescape", "/v1/investigations/..%2Fescape/events"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, body = %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestDecidedTombstonesAreBounded(t *testing.T) {
+	service := New(context.Background(), nil, nil, nil)
+	var first, last string
+	for i := 0; i <= decidedCap; i++ {
+		pending, err := service.addPending("inv", agent.ToolCall{ID: "call", Name: "repair"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = pending.ID
+		}
+		last = pending.ID
+		if err := service.DecideApproval(pending.ID, true, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.DecideApproval(first, true, "test"); !errors.Is(err, ErrApprovalNotFound) {
+		t.Fatalf("evicted tombstone error = %v", err)
+	}
+	if err := service.DecideApproval(last, true, "test"); !errors.Is(err, ErrApprovalAlreadyDecided) {
+		t.Fatalf("recent tombstone error = %v", err)
+	}
+}

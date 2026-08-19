@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -289,9 +290,11 @@ func (s *Store) record(id string, event Event) {
 	s.mu.Unlock()
 }
 
+var ErrInvalidID = errors.New("invalid investigation id")
+
 func validateID(id string) error {
 	if filepath.Base(id) != id || id == "." || id == "" {
-		return fmt.Errorf("invalid investigation id %q", id)
+		return fmt.Errorf("%w %q", ErrInvalidID, id)
 	}
 	return nil
 }

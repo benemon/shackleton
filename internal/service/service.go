@@ -102,11 +102,16 @@ type Service struct {
 	newRunner RunnerFactory
 	wg        sync.WaitGroup
 
-	mu          sync.Mutex
-	pending     map[string]*pendingApproval
-	decided     map[string]struct{}
-	subscribers map[chan ApprovalEvent]struct{}
+	mu           sync.Mutex
+	pending      map[string]*pendingApproval
+	decided      map[string]struct{}
+	decidedOrder []string
+	subscribers  map[chan ApprovalEvent]struct{}
 }
+
+// decidedCap bounds the tombstones that distinguish an already-decided
+// approval (409) from an unknown one (404); evicted ids report unknown.
+const decidedCap = 1024
 
 func New(ctx context.Context, audit *store.Store, cfg *config.Config, newRunner RunnerFactory) *Service {
 	return &Service{
@@ -266,6 +271,11 @@ func (s *Service) DecideApproval(id string, approved bool, via string) error {
 	}
 	delete(s.pending, id)
 	s.decided[id] = struct{}{}
+	s.decidedOrder = append(s.decidedOrder, id)
+	if len(s.decidedOrder) > decidedCap {
+		delete(s.decided, s.decidedOrder[0])
+		s.decidedOrder = s.decidedOrder[1:]
+	}
 	decision := agent.Decision{Approved: approved, Via: via}
 	s.publishApprovalLocked(ApprovalEvent{Type: "settled", Approval: pending.PendingApproval, Approved: approved, Via: via})
 	s.mu.Unlock()
