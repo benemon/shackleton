@@ -14,7 +14,7 @@ test:
 	go test ./... -count=1
 
 image:
-	$(CONTAINER_TOOL) build -t shackleton:$(VERSION) --build-arg VERSION=$(VERSION) .
+	$(CONTAINER_TOOL) build -t shackleton:$(VERSION) --build-arg APP_VERSION=$(VERSION) .
 
 clean:
 	rm -rf bin
