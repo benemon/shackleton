@@ -1,5 +1,7 @@
-# Address reserved for the future API listener.
+# Address for the API listener.
 listen: "127.0.0.1:8420"
+# Environment variable containing the API bearer token.
+api_token: {env: SHACKLETON_API_TOKEN}
 # Directory containing investigation audit state.
 state_dir: /var/lib/shackleton
 # Dotenv files loaded before secret references are resolved.

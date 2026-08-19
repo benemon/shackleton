@@ -13,8 +13,8 @@ import (
 )
 
 type SecretRef struct {
-	Env  string `yaml:"env,omitempty"`
-	File string `yaml:"file,omitempty"`
+	Env  string `json:"env,omitempty" yaml:"env,omitempty"`
+	File string `json:"file,omitempty" yaml:"file,omitempty"`
 }
 
 func (SecretRef) String() string            { return "<redacted>" }
@@ -48,7 +48,9 @@ func (Secret) MarshalYAML() (any, error) { return "<redacted>", nil }
 func (s *Secret) UnmarshalYAML(n *yaml.Node) error {
 	return n.Decode(&s.ref)
 }
-func (s Secret) Value() string { return s.value }
+func (s Secret) Value() string  { return s.value }
+func (s Secret) Ref() SecretRef { return s.ref }
+func (s Secret) IsSet() bool    { return s.ref.Env != "" || s.ref.File != "" }
 
 type Duration struct {
 	value time.Duration
@@ -108,6 +110,7 @@ type Config struct {
 	GatedTools []string    `yaml:"gated_tools"`
 	Telegram   Telegram    `yaml:"telegram"`
 	Agent      Agent       `yaml:"agent"`
+	APIToken   Secret      `yaml:"api_token"`
 }
 
 func Load(path string) (*Config, error) {
@@ -205,6 +208,9 @@ func (c *Config) applyDefaultsAndValidate() error {
 	if c.Agent.InvestigationTimeout.value < 0 {
 		return fmt.Errorf("agent.investigation_timeout must be positive")
 	}
+	if err := c.APIToken.resolve("api_token", false); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -224,7 +230,6 @@ func (s *Secret) resolve(field string, required bool) error {
 			return fmt.Errorf("%s: environment variable %s is not set", field, s.ref.Env)
 		}
 		s.value = value
-		s.ref = SecretRef{}
 		return nil
 	}
 	value, err := os.ReadFile(s.ref.File)
@@ -235,7 +240,6 @@ func (s *Secret) resolve(field string, required bool) error {
 	if s.value == "" {
 		return fmt.Errorf("%s: file %s is empty", field, s.ref.File)
 	}
-	s.ref = SecretRef{}
 	return nil
 }
 

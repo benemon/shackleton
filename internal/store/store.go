@@ -81,6 +81,7 @@ type Store struct {
 	dir         string
 	mu          sync.Mutex
 	summaries   map[string]Summary
+	buffers     map[string][]Event
 	subscribers map[string]map[chan Event]struct{}
 }
 
@@ -100,6 +101,7 @@ func Open(dir string) (*Store, error) {
 	}
 	s := &Store{
 		dir: investigationsDir, summaries: make(map[string]Summary),
+		buffers:     make(map[string][]Event),
 		subscribers: make(map[string]map[chan Event]struct{}),
 	}
 	entries, err := os.ReadDir(investigationsDir)
@@ -135,9 +137,15 @@ func (s *Store) Begin(question, trigger string) (*Investigation, error) {
 		if err != nil {
 			return nil, err
 		}
+		s.mu.Lock()
+		s.buffers[id] = nil
+		s.mu.Unlock()
 		investigation := &Investigation{ID: id, store: s, file: file, writer: bufio.NewWriter(file)}
 		if err := investigation.Append(EventCreated, CreatedPayload{Question: question, Trigger: trigger}); err != nil {
 			_ = investigation.Close()
+			s.mu.Lock()
+			delete(s.buffers, id)
+			s.mu.Unlock()
 			return nil, err
 		}
 		return investigation, nil
@@ -201,21 +209,42 @@ func (s *Store) List() []Summary {
 }
 
 func (s *Store) Get(id string) ([]Event, error) {
-	if filepath.Base(id) != id || id == "." || id == "" {
-		return nil, fmt.Errorf("invalid investigation id %q", id)
+	if err := validateID(id); err != nil {
+		return nil, err
 	}
 	return readEvents(s.path(id))
 }
 
 // Subscribe drops the oldest buffered event if a slow subscriber fills its channel.
 func (s *Store) Subscribe(id string) (<-chan Event, func()) {
-	ch := make(chan Event, 32)
 	s.mu.Lock()
+	ch, cancel := s.subscribeLocked(id)
+	s.mu.Unlock()
+	return ch, cancel
+}
+
+func (s *Store) Follow(id string) ([]Event, <-chan Event, func(), error) {
+	if err := validateID(id); err != nil {
+		return nil, nil, func() {}, err
+	}
+	s.mu.Lock()
+	if events, ok := s.buffers[id]; ok {
+		snapshot := append([]Event(nil), events...)
+		ch, cancel := s.subscribeLocked(id)
+		s.mu.Unlock()
+		return snapshot, ch, cancel, nil
+	}
+	s.mu.Unlock()
+	events, err := readEvents(s.path(id))
+	return events, nil, func() {}, err
+}
+
+func (s *Store) subscribeLocked(id string) (chan Event, func()) {
+	ch := make(chan Event, 32)
 	if s.subscribers[id] == nil {
 		s.subscribers[id] = make(map[chan Event]struct{})
 	}
 	s.subscribers[id][ch] = struct{}{}
-	s.mu.Unlock()
 	var once sync.Once
 	return ch, func() {
 		once.Do(func() {
@@ -234,6 +263,9 @@ func (s *Store) path(id string) string { return filepath.Join(s.dir, id+".jsonl"
 
 func (s *Store) record(id string, event Event) {
 	s.mu.Lock()
+	if events, ok := s.buffers[id]; ok {
+		s.buffers[id] = append(events, event)
+	}
 	summary := s.summaries[id]
 	applyEvent(&summary, id, event)
 	s.summaries[id] = summary
@@ -251,7 +283,17 @@ func (s *Store) record(id string, event Event) {
 			}
 		}
 	}
+	if event.Type == EventCompleted || event.Type == EventFailed {
+		delete(s.buffers, id)
+	}
 	s.mu.Unlock()
+}
+
+func validateID(id string) error {
+	if filepath.Base(id) != id || id == "." || id == "" {
+		return fmt.Errorf("invalid investigation id %q", id)
+	}
+	return nil
 }
 
 func readEvents(path string) ([]Event, error) {

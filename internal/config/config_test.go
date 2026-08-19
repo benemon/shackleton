@@ -117,6 +117,30 @@ func TestLoadResolvesEnvironmentAndFileSecretsFromTheirSources(t *testing.T) {
 	if got := cfg.MCPServers[0].AuthHeader.Value(); got != "Bearer file-secret" {
 		t.Fatalf("file secret = %q", got)
 	}
+	if got := cfg.Model.APIKey.Ref(); got.Env != "CONFIG_API_KEY" || got.File != "" {
+		t.Fatalf("environment secret ref = %+v", got)
+	}
+	if got := cfg.MCPServers[0].AuthHeader.Ref(); got.File != secretPath || got.Env != "" {
+		t.Fatalf("file secret ref = %+v", got)
+	}
+}
+
+func TestAPITokenIsOptionalAndResolvedWhenSet(t *testing.T) {
+	cfg, err := Load(validConfig(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIToken.IsSet() || cfg.APIToken.Value() != "" {
+		t.Fatalf("optional API token = ref %+v value %q", cfg.APIToken.Ref(), cfg.APIToken.Value())
+	}
+	t.Setenv("CONFIG_API_TOKEN", "api-secret")
+	cfg, err = Load(validConfig(t, "api_token: {env: CONFIG_API_TOKEN}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIToken.Value() != "api-secret" || cfg.APIToken.Ref().Env != "CONFIG_API_TOKEN" {
+		t.Fatalf("API token = ref %+v value %q", cfg.APIToken.Ref(), cfg.APIToken.Value())
+	}
 }
 
 func TestLoadRejectsUnknownKeys(t *testing.T) {

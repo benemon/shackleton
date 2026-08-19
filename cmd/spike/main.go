@@ -6,16 +6,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/benemon/shackleton/internal/agent"
 	"github.com/benemon/shackleton/internal/config"
+	"github.com/benemon/shackleton/internal/service"
 	"github.com/benemon/shackleton/internal/store"
 	"github.com/benemon/shackleton/internal/telegram"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -28,7 +32,7 @@ const defaultBase = "https://litellm.apps.ocp.lab.orbital.home/v1"
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: spike <llm|mcp|thanos|agent|bench>")
+		fmt.Fprintln(os.Stderr, "usage: spike <llm|mcp|thanos|agent|bench|serve>")
 		os.Exit(2)
 	}
 	if f := os.Getenv("SPIKE_ENV_FILE"); f != "" {
@@ -55,6 +59,9 @@ func main() {
 	case "bench":
 		probe = false
 		err = runBench(context.Background(), os.Args[2:])
+	case "serve":
+		probe = false
+		err = runServe(context.Background(), os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown probe %q", os.Args[1])
 	}
@@ -277,6 +284,72 @@ func runAgent(ctx context.Context, args []string) error {
 	return runErr
 }
 
+func runServe(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	configPath := flags.String("config", "", "configuration YAML file")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *configPath == "" || flags.NArg() != 0 {
+		return fmt.Errorf("usage: spike serve -config=<path>")
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if err := validateServeConfig(cfg); err != nil {
+		return err
+	}
+
+	signalCtx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	investigationCtx, cancelInvestigations := context.WithCancel(ctx)
+	factory, closeSessions, err := newRunnerFactory(investigationCtx, cfg)
+	if err != nil {
+		cancelInvestigations()
+		return err
+	}
+	audit, err := store.Open(cfg.StateDir)
+	if err != nil {
+		cancelInvestigations()
+		closeSessions()
+		return err
+	}
+	core := service.New(investigationCtx, audit, cfg, factory)
+	server := &http.Server{Addr: cfg.Listen, Handler: service.NewHTTP(core, cfg.APIToken.Value())}
+	serverErrors := make(chan error, 1)
+	go func() { serverErrors <- server.ListenAndServe() }()
+
+	var serveErr error
+	select {
+	case err := <-serverErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			serveErr = err
+		}
+	case <-signalCtx.Done():
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
+		serveErr = server.Shutdown(shutdownCtx)
+		cancelShutdown()
+		if serveErr != nil {
+			_ = server.Close()
+		}
+	}
+	cancelInvestigations()
+	core.Wait()
+	closeSessions()
+	return serveErr
+}
+
+func validateServeConfig(cfg *config.Config) error {
+	if cfg.Listen == "" {
+		return fmt.Errorf("listen is required for serve")
+	}
+	if cfg.APIToken.Value() == "" {
+		return fmt.Errorf("api_token is required for serve")
+	}
+	return nil
+}
+
 type scenario struct {
 	ID              string `json:"id"`
 	Question        string `json:"question"`
@@ -459,6 +532,30 @@ func newRunner(ctx context.Context, approverName string, cfg *config.Config) (*a
 	if approverName != "cli-deny" && approverName != "cli-approve" && approverName != "telegram" {
 		return nil, func() {}, fmt.Errorf("unknown approver %q", approverName)
 	}
+	factory, closeSessions, err := newRunnerFactory(ctx, cfg)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	runner := factory(nil, nil)
+	runner.ApprovalVia = approverName
+	switch approverName {
+	case "cli-deny":
+		runner.Approver = agent.NewCLIApprover(false)
+	case "cli-approve":
+		runner.Approver = agent.NewCLIApprover(true)
+	case "telegram":
+		adapter, err := telegram.New(ctx, os.Getenv("TG_BOT_TOKEN"), os.Getenv("TG_CHAT_ID"), 0)
+		if err != nil {
+			closeSessions()
+			return nil, func() {}, err
+		}
+		runner.Approver = adapter
+		runner.Notifier = adapter
+	}
+	return runner, closeSessions, nil
+}
+
+func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFactory, func(), error) {
 	gatedTools := make(map[string]bool, len(cfg.GatedTools))
 	for _, name := range cfg.GatedTools {
 		gatedTools[name] = true
@@ -487,27 +584,12 @@ func newRunner(ctx context.Context, approverName string, cfg *config.Config) (*a
 	}
 	closeSessions := func() { _ = registry.Close() }
 	openAIClient := openai.NewClient(option.WithBaseURL(cfg.Model.BaseURL), option.WithAPIKey(cfg.Model.APIKey.Value()))
-	runner := &agent.Runner{
-		Complete:             agent.StreamCompleter(openAIClient, cfg.Model.Name),
-		Tools:                registry,
-		ApprovalVia:          approverName,
-		MaxRounds:            cfg.Agent.MaxRounds,
-		CallTimeout:          cfg.Agent.CallTimeout.Duration(),
-		InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration(),
-	}
-	switch approverName {
-	case "cli-deny":
-		runner.Approver = agent.NewCLIApprover(false)
-	case "cli-approve":
-		runner.Approver = agent.NewCLIApprover(true)
-	case "telegram":
-		adapter, err := telegram.New(ctx, os.Getenv("TG_BOT_TOKEN"), os.Getenv("TG_CHAT_ID"), 0)
-		if err != nil {
-			closeSessions()
-			return nil, func() {}, err
+	complete := agent.StreamCompleter(openAIClient, cfg.Model.Name)
+	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		return &agent.Runner{
+			Complete: complete, Tools: registry, Approver: approver, ApprovalVia: "api", Events: events,
+			MaxRounds: cfg.Agent.MaxRounds, CallTimeout: cfg.Agent.CallTimeout.Duration(),
+			InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration(),
 		}
-		runner.Approver = adapter
-		runner.Notifier = adapter
-	}
-	return runner, closeSessions, nil
+	}, closeSessions, nil
 }

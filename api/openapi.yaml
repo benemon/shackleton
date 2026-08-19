@@ -1,0 +1,477 @@
+openapi: 3.0.3
+info:
+  title: Shackleton API
+  version: v1
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+paths:
+  /v1/investigations:
+    post:
+      operationId: createInvestigation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvestigationRequest'
+      responses:
+        '201':
+          description: Investigation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Summary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listInvestigations
+      responses:
+        '200':
+          description: Investigations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Summary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/investigations/{id}:
+    parameters:
+      - $ref: '#/components/parameters/InvestigationID'
+    get:
+      operationId: getInvestigation
+      responses:
+        '200':
+          description: Investigation and its events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Investigation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/investigations/{id}/events:
+    parameters:
+      - $ref: '#/components/parameters/InvestigationID'
+    get:
+      operationId: followInvestigationEvents
+      responses:
+        '200':
+          description: Server-sent investigation event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/approvals:
+    get:
+      operationId: listPendingApprovals
+      responses:
+        '200':
+          description: Pending approvals
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PendingApproval'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/approvals/{id}/decision:
+    parameters:
+      - $ref: '#/components/parameters/ApprovalID'
+    post:
+      operationId: decideApproval
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecision'
+      responses:
+        '200':
+          description: Approval decided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalDecision'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /v1/config:
+    get:
+      operationId: getConfig
+      responses:
+        '200':
+          description: Redacted configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /v1/health:
+    get:
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service health
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    InvestigationID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    ApprovalID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Approval already decided
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Internal error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    CreateInvestigationRequest:
+      type: object
+      additionalProperties: false
+      required: [question]
+      properties:
+        question:
+          type: string
+          minLength: 1
+          pattern: '\S'
+        trigger:
+          type: string
+          default: api
+    ApprovalDecision:
+      type: object
+      additionalProperties: false
+      required: [approved]
+      properties:
+        approved:
+          type: boolean
+    Summary:
+      type: object
+      additionalProperties: false
+      required: [id, question, trigger, status, started_at, ended_at]
+      properties:
+        id:
+          type: string
+        question:
+          type: string
+        trigger:
+          type: string
+        status:
+          type: string
+          enum: [running, completed, failed]
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        answer:
+          type: string
+    Investigation:
+      type: object
+      additionalProperties: false
+      required: [summary, events]
+      properties:
+        summary:
+          $ref: '#/components/schemas/Summary'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+    Event:
+      type: object
+      additionalProperties: false
+      required: [ts, type, payload]
+      properties:
+        ts:
+          type: string
+          format: date-time
+        type:
+          type: string
+          enum: [created, tool_call, approval_requested, approval_decided, completed, failed]
+        payload:
+          oneOf:
+            - $ref: '#/components/schemas/CreatedPayload'
+            - $ref: '#/components/schemas/ToolCallPayload'
+            - $ref: '#/components/schemas/ApprovalRequestedPayload'
+            - $ref: '#/components/schemas/ApprovalDecidedPayload'
+            - $ref: '#/components/schemas/CompletedPayload'
+            - $ref: '#/components/schemas/FailedPayload'
+    CreatedPayload:
+      type: object
+      additionalProperties: false
+      required: [question, trigger]
+      properties:
+        question:
+          type: string
+        trigger:
+          type: string
+    ToolCallPayload:
+      type: object
+      additionalProperties: false
+      required: [round, name, args, result_snippet, error]
+      properties:
+        round:
+          type: integer
+        name:
+          type: string
+        args: {}
+        result_snippet:
+          type: string
+        error:
+          type: boolean
+    ApprovalRequestedPayload:
+      type: object
+      additionalProperties: false
+      required: [call_id, name, human]
+      properties:
+        call_id:
+          type: string
+        name:
+          type: string
+        human:
+          type: string
+    ApprovalDecidedPayload:
+      type: object
+      additionalProperties: false
+      required: [call_id, approved, via]
+      properties:
+        call_id:
+          type: string
+        approved:
+          type: boolean
+        via:
+          type: string
+    CompletedPayload:
+      type: object
+      additionalProperties: false
+      required: [answer, metrics]
+      properties:
+        answer:
+          type: string
+        metrics:
+          $ref: '#/components/schemas/Metrics'
+    FailedPayload:
+      type: object
+      additionalProperties: false
+      required: [reason, metrics]
+      properties:
+        reason:
+          type: string
+        metrics:
+          $ref: '#/components/schemas/Metrics'
+    Metrics:
+      type: object
+      additionalProperties: false
+      required: [rounds, tool_calls_total, malformed_json, schema_invalid, unknown_tool, tool_errors, wrong_first_tool, denied, recovered, duration, completed, answer]
+      properties:
+        rounds:
+          type: integer
+        tool_calls_total:
+          type: integer
+        malformed_json:
+          type: integer
+        schema_invalid:
+          type: integer
+        unknown_tool:
+          type: integer
+        tool_errors:
+          type: integer
+        wrong_first_tool:
+          type: boolean
+        denied:
+          type: integer
+        recovered:
+          type: integer
+        duration:
+          type: integer
+          format: int64
+        completed:
+          type: boolean
+        answer:
+          type: string
+    PendingApproval:
+      type: object
+      additionalProperties: false
+      required: [id, investigation_id, call_id, name, human, requested_at]
+      properties:
+        id:
+          type: string
+        investigation_id:
+          type: string
+        call_id:
+          type: string
+        name:
+          type: string
+        human:
+          type: string
+        requested_at:
+          type: string
+          format: date-time
+    SecretRef:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [env]
+          properties:
+            env:
+              type: string
+        - type: object
+          additionalProperties: false
+          required: [file]
+          properties:
+            file:
+              type: string
+    ConfigView:
+      type: object
+      additionalProperties: false
+      required: [listen, state_dir, env_files, model, mcp_servers, prometheus, gated_tools, telegram, agent, api_token]
+      properties:
+        listen:
+          type: string
+        state_dir:
+          type: string
+        env_files:
+          type: array
+          items:
+            type: string
+        model:
+          type: object
+          additionalProperties: false
+          required: [base_url, name, api_key]
+          properties:
+            base_url:
+              type: string
+            name:
+              type: string
+            api_key:
+              $ref: '#/components/schemas/SecretRef'
+        mcp_servers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, url]
+            properties:
+              name:
+                type: string
+              url:
+                type: string
+              auth_header:
+                $ref: '#/components/schemas/SecretRef'
+        prometheus:
+          type: object
+          additionalProperties: false
+          required: [url, auth_header]
+          properties:
+            url:
+              type: string
+            auth_header:
+              $ref: '#/components/schemas/SecretRef'
+        gated_tools:
+          type: array
+          items:
+            type: string
+        telegram:
+          type: object
+          additionalProperties: false
+          required: [env_file]
+          properties:
+            env_file:
+              type: string
+        agent:
+          type: object
+          additionalProperties: false
+          required: [max_rounds, call_timeout, investigation_timeout]
+          properties:
+            max_rounds:
+              type: integer
+            call_timeout:
+              type: string
+            investigation_timeout:
+              type: string
+        api_token:
+          $ref: '#/components/schemas/SecretRef'
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string

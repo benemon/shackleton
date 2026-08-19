@@ -96,6 +96,74 @@ func TestSubscribeDeliversAppendedEventsInOrder(t *testing.T) {
 	}
 }
 
+func TestFollowHasExactSnapshotAndLiveBoundary(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	investigation, err := s.Begin("question", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := 1; round <= 3; round++ {
+		if err := investigation.Append(EventToolCall, ToolCallPayload{Round: round, Name: "tool"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, live, cancel, err := s.Follow(investigation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if len(snapshot) != 4 {
+		t.Fatalf("snapshot has %d events, want 4", len(snapshot))
+	}
+	for round := 4; round <= 6; round++ {
+		if err := investigation.Append(EventToolCall, ToolCallPayload{Round: round, Name: "tool"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for round := 4; round <= 6; round++ {
+		select {
+		case event := <-live:
+			var payload ToolCallPayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if event.Type != EventToolCall || payload.Round != round {
+				t.Fatalf("live event = %s round %d, want %s round %d", event.Type, payload.Round, EventToolCall, round)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for round %d", round)
+		}
+	}
+	select {
+	case event := <-live:
+		t.Fatalf("unexpected duplicate live event: %+v", event)
+	default:
+	}
+	if err := investigation.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, reopenedLive, reopenedCancel, err := reopened.Follow(investigation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopenedCancel()
+	if len(replayed) != 7 {
+		t.Fatalf("reopened snapshot has %d events, want 7", len(replayed))
+	}
+	if reopenedLive != nil {
+		t.Fatal("reopened investigation returned a live channel")
+	}
+}
+
 func TestStatusIsDerivedFromLastEvent(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

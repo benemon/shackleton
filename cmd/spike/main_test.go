@@ -25,3 +25,45 @@ func TestLoadEnvFilePreservesExistingEnvironment(t *testing.T) {
 		t.Fatalf("dotenv value was not loaded: %q", got)
 	}
 }
+
+func TestValidateServeConfigRequiresListenAndAPIToken(t *testing.T) {
+	t.Setenv("CONFIG_API_KEY", "model-secret")
+	t.Setenv("CONFIG_PROM_AUTH", "prom-secret")
+	t.Setenv("CONFIG_API_TOKEN", "api-secret")
+	path := filepath.Join(t.TempDir(), "shackleton.yaml")
+	contents := `
+listen: "127.0.0.1:8420"
+state_dir: /tmp/shackleton
+model:
+  base_url: https://model.example/v1
+  name: test-model
+  api_key: {env: CONFIG_API_KEY}
+mcp_servers:
+  - name: remediation
+    url: http://127.0.0.1:8100/mcp
+prometheus:
+  url: https://prometheus.example
+  auth_header: {env: CONFIG_PROM_AUTH}
+gated_tools: []
+api_token: {env: CONFIG_API_TOKEN}
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateServeConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Listen = ""
+	if err := validateServeConfig(cfg); err == nil || err.Error() != "listen is required for serve" {
+		t.Fatalf("empty listen error = %v", err)
+	}
+	cfg.Listen = "127.0.0.1:8420"
+	cfg.APIToken = config.Secret{}
+	if err := validateServeConfig(cfg); err == nil || err.Error() != "api_token is required for serve" {
+		t.Fatalf("empty API token error = %v", err)
+	}
+}
