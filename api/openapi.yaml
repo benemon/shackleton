@@ -419,7 +419,7 @@ components:
     ConfigView:
       type: object
       additionalProperties: false
-      required: [listen, state_dir, env_files, model, mcp_servers, prometheus, gated_tools, telegram, agent, api_token]
+      required: [listen, state_dir, env_files, model, mcp_servers, prometheus, gated_tools, telegram, agent, sweeps, api_token]
       properties:
         listen:
           type: string
@@ -484,6 +484,19 @@ components:
               type: string
             investigation_timeout:
               type: string
+        sweeps:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, schedule, question]
+            properties:
+              name:
+                type: string
+              schedule:
+                type: string
+              question:
+                type: string
         api_token:
           $ref: '#/components/schemas/SecretRef'
     Health:

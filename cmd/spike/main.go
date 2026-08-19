@@ -21,6 +21,7 @@ import (
 	"github.com/benemon/shackleton/internal/config"
 	"github.com/benemon/shackleton/internal/service"
 	"github.com/benemon/shackleton/internal/store"
+	"github.com/benemon/shackleton/internal/sweep"
 	"github.com/benemon/shackleton/internal/telegram"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
@@ -316,8 +317,16 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	core := service.New(investigationCtx, audit, cfg, factory)
+	var notifier agent.Notifier
 	telegramToken, telegramChatID := os.Getenv("TG_BOT_TOKEN"), os.Getenv("TG_CHAT_ID")
 	if telegramToken != "" && telegramChatID != "" {
+		sender, err := telegram.NewNotifier(telegramToken, telegramChatID)
+		if err != nil {
+			cancelInvestigations()
+			closeSessions()
+			return err
+		}
+		notifier = sender
 		if _, err := telegram.NewTrigger(investigationCtx, telegramToken, telegramChatID, core); err != nil {
 			cancelInvestigations()
 			closeSessions()
@@ -325,6 +334,9 @@ func runServe(ctx context.Context, args []string) error {
 		}
 	} else {
 		fmt.Fprintln(os.Stderr, "telegram trigger disabled: TG_BOT_TOKEN and TG_CHAT_ID are required")
+	}
+	if len(cfg.Sweeps) > 0 {
+		sweep.Run(investigationCtx, cfg.Sweeps, core, notifier)
 	}
 	server := &http.Server{Addr: cfg.Listen, Handler: service.NewHTTP(core, cfg.APIToken.Value())}
 	serverErrors := make(chan error, 1)

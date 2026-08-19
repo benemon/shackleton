@@ -208,3 +208,33 @@ func TestLoadParsesDurations(t *testing.T) {
 		t.Fatalf("invalid duration error = %v", err)
 	}
 }
+
+func TestLoadValidatesSweeps(t *testing.T) {
+	good := "sweeps:\n  - name: node-fs\n    schedule: \"0 */4 * * *\"\n    question: check filesystems\n"
+	cfg, err := Load(validConfig(t, good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Sweeps) != 1 || cfg.Sweeps[0].Parsed() == nil {
+		t.Fatalf("sweeps = %+v", cfg.Sweeps)
+	}
+	next := cfg.Sweeps[0].Parsed().Next(time.Date(2026, 1, 1, 1, 30, 0, 0, time.UTC))
+	if want := time.Date(2026, 1, 1, 4, 0, 0, 0, time.UTC); !next.Equal(want) {
+		t.Fatalf("next firing = %v, want %v", next, want)
+	}
+	bad := []struct {
+		label string
+		yaml  string
+	}{
+		{"sweeps[0].schedule", "sweeps:\n  - name: x\n    schedule: \"not cron\"\n    question: q\n"},
+		{"sweeps[0].schedule is required", "sweeps:\n  - name: x\n    question: q\n"},
+		{"sweeps[0].name is required", "sweeps:\n  - schedule: \"* * * * *\"\n    question: q\n"},
+		{"sweeps[0].question is required", "sweeps:\n  - name: x\n    schedule: \"* * * * *\"\n"},
+		{"sweeps[1].name \"x\" is duplicated", "sweeps:\n  - name: x\n    schedule: \"* * * * *\"\n    question: q\n  - name: x\n    schedule: \"* * * * *\"\n    question: q\n"},
+	}
+	for _, test := range bad {
+		if _, err := Load(validConfig(t, test.yaml)); err == nil || !strings.Contains(err.Error(), test.label) {
+			t.Fatalf("%s: error = %v", test.label, err)
+		}
+	}
+}

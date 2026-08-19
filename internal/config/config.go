@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -100,6 +101,15 @@ type Agent struct {
 	InvestigationTimeout Duration `yaml:"investigation_timeout"`
 }
 
+type Sweep struct {
+	Name     string `yaml:"name"`
+	Schedule string `yaml:"schedule"`
+	Question string `yaml:"question"`
+	schedule cron.Schedule
+}
+
+func (s Sweep) Parsed() cron.Schedule { return s.schedule }
+
 type Config struct {
 	Listen     string      `yaml:"listen"`
 	StateDir   string      `yaml:"state_dir"`
@@ -110,6 +120,7 @@ type Config struct {
 	GatedTools []string    `yaml:"gated_tools"`
 	Telegram   Telegram    `yaml:"telegram"`
 	Agent      Agent       `yaml:"agent"`
+	Sweeps     []Sweep     `yaml:"sweeps,omitempty"`
 	APIToken   Secret      `yaml:"api_token"`
 }
 
@@ -207,6 +218,29 @@ func (c *Config) applyDefaultsAndValidate() error {
 	}
 	if c.Agent.InvestigationTimeout.value < 0 {
 		return fmt.Errorf("agent.investigation_timeout must be positive")
+	}
+	names := make(map[string]bool, len(c.Sweeps))
+	for i := range c.Sweeps {
+		sweep := &c.Sweeps[i]
+		prefix := fmt.Sprintf("sweeps[%d]", i)
+		if sweep.Name == "" {
+			return fmt.Errorf("%s.name is required", prefix)
+		}
+		if names[sweep.Name] {
+			return fmt.Errorf("%s.name %q is duplicated", prefix, sweep.Name)
+		}
+		names[sweep.Name] = true
+		if sweep.Question == "" {
+			return fmt.Errorf("%s.question is required", prefix)
+		}
+		if sweep.Schedule == "" {
+			return fmt.Errorf("%s.schedule is required", prefix)
+		}
+		parsed, err := cron.ParseStandard(sweep.Schedule)
+		if err != nil {
+			return fmt.Errorf("%s.schedule: %w", prefix, err)
+		}
+		sweep.schedule = parsed
 	}
 	if err := c.APIToken.resolve("api_token", false); err != nil {
 		return err

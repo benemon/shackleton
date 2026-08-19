@@ -30,6 +30,13 @@ gated_tools: [run_host_command, run_kubectl_command]
 telegram:
   # Optional dotenv file defining TG_BOT_TOKEN and TG_CHAT_ID.
   env_file: /etc/shackleton/telegram.env
+sweeps:
+  # Name used in the investigation trigger and notifications.
+  - name: node-fs
+    # Standard five-field cron expression.
+    schedule: "0 */4 * * *"
+    # Question posed to the model; a structured-verdict instruction is appended.
+    question: Check node filesystem pressure and report any host above 80% used.
 agent:
   # Maximum model completion rounds per investigation.
   max_rounds: 8

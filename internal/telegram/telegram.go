@@ -157,6 +157,25 @@ func (a *Adapter) handleCallback(ctx context.Context, callback callbackQuery) {
 	p.decision <- approved
 }
 
+// Notifier sends without polling: it can run alongside another getUpdates
+// consumer on the same bot token, which the Adapter and Trigger cannot.
+type Notifier struct {
+	bot *bot
+}
+
+func NewNotifier(token, chatID string) (*Notifier, error) {
+	client, err := newBot(token, chatID)
+	if err != nil {
+		return nil, err
+	}
+	return &Notifier{bot: client}, nil
+}
+
+func (n *Notifier) Send(ctx context.Context, text string) error {
+	_, err := n.bot.sendMessage(ctx, truncate(text, 3800), nil)
+	return err
+}
+
 type Trigger struct {
 	bot      *bot
 	service  *service.Service
@@ -503,3 +522,4 @@ func truncate(text string, limit int) string {
 
 var _ agent.Approver = (*Adapter)(nil)
 var _ agent.Notifier = (*Adapter)(nil)
+var _ agent.Notifier = (*Notifier)(nil)

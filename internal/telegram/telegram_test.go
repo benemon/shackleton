@@ -373,3 +373,21 @@ func TestTriggerEditsApprovalSettledViaAPI(t *testing.T) {
 		t.Fatalf("settled edit = %+v", edits[0].payload)
 	}
 }
+
+func TestNotifierSendsTruncatedWithoutPolling(t *testing.T) {
+	client, recorder := testBot(t)
+	notifier := &Notifier{bot: client}
+	if err := notifier.Send(context.Background(), strings.Repeat("界", 3801)); err != nil {
+		t.Fatal(err)
+	}
+	sends := recorder.matching("sendMessage")
+	if len(sends) != 1 {
+		t.Fatalf("sendMessage calls = %d", len(sends))
+	}
+	if got := []rune(sends[0].payload["text"].(string)); len(got) != 3800 {
+		t.Fatalf("sent %d characters, want 3800", len(got))
+	}
+	if polls := recorder.matching("getUpdates"); len(polls) != 0 {
+		t.Fatalf("notifier polled getUpdates %d times", len(polls))
+	}
+}
