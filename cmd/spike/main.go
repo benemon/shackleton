@@ -11,10 +11,12 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/benemon/shackleton/internal/agent"
+	"github.com/benemon/shackleton/internal/config"
+	"github.com/benemon/shackleton/internal/store"
 	"github.com/benemon/shackleton/internal/telegram"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
@@ -30,7 +32,7 @@ func main() {
 		os.Exit(2)
 	}
 	if f := os.Getenv("SPIKE_ENV_FILE"); f != "" {
-		if err := loadEnvFile(f); err != nil {
+		if err := config.LoadEnvFile(f); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: env file: %v\n", err)
 			os.Exit(1)
 		}
@@ -77,29 +79,6 @@ func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		req.Header.Set(k, v)
 	}
 	return h.base.RoundTrip(req)
-}
-
-// loadEnvFile parses a dotenv-style file (KEY=value, # comments; values may
-// contain spaces unquoted — /opt/holmes/env is written for python-dotenv and
-// is NOT shell-sourceable). Existing environment wins.
-func loadEnvFile(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	for line := range strings.Lines(string(data)) {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok || os.Getenv(k) != "" {
-			continue
-		}
-		v = strings.Trim(v, `"'`)
-		os.Setenv(k, v)
-	}
-	return nil
 }
 
 func envOr(key, fallback string) string {
@@ -247,25 +226,49 @@ func probeThanos(ctx context.Context) error {
 
 func runAgent(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("agent", flag.ContinueOnError)
+	configPath := flags.String("config", "", "configuration YAML file")
 	approverName := flags.String("approver", "cli-deny", "cli-deny, cli-approve, or telegram")
 	verbose := flags.Bool("v", false, "trace each tool call and result to stderr")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 1 {
-		return fmt.Errorf("usage: spike agent [-approver=cli-deny|cli-approve|telegram] [-v] \"<question>\"")
+	if *configPath == "" || flags.NArg() != 1 {
+		return fmt.Errorf("usage: spike agent -config=<path> [-approver=cli-deny|cli-approve|telegram] [-v] \"<question>\"")
 	}
-	runner, closeSessions, err := newRunner(ctx, *approverName)
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	runner, closeSessions, err := newRunner(ctx, *approverName, cfg)
 	if err != nil {
 		return err
 	}
 	defer closeSessions()
-	if *verbose {
-		runner.Trace = func(round int, name, args, result string) {
-			fmt.Fprintf(os.Stderr, "[round %d] %s %s -> %.300s\n", round, name, args, result)
-		}
+	audit, err := store.Open(cfg.StateDir)
+	if err != nil {
+		return err
 	}
+	investigation, err := audit.Begin(flags.Arg(0), "cli")
+	if err != nil {
+		return err
+	}
+	sink := &investigationSink{investigation: investigation, verbose: *verbose}
+	runner.Events = sink
 	metrics, runErr := runner.Run(ctx, flags.Arg(0), "")
+	if eventErr := sink.Err(); eventErr != nil {
+		runErr = eventErr
+	}
+	if runErr != nil {
+		err = investigation.Append(store.EventFailed, store.FailedPayload{Reason: runErr.Error(), Metrics: metrics})
+	} else {
+		err = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Metrics: metrics})
+	}
+	if closeErr := investigation.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
 	if metrics.Answer != "" {
 		fmt.Println(metrics.Answer)
 	}
@@ -283,7 +286,14 @@ type scenario struct {
 type benchResult struct {
 	ScenarioID string `json:"scenario_id"`
 	Run        int    `json:"run"`
+	Error      string `json:"error,omitempty"`
 	agent.Metrics
+}
+
+type benchFailure struct {
+	scenarioID string
+	run        int
+	err        string
 }
 
 type aggregate struct {
@@ -292,14 +302,22 @@ type aggregate struct {
 
 func runBench(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("bench", flag.ContinueOnError)
+	configPath := flags.String("config", "", "configuration YAML file")
 	scenariosPath := flags.String("scenarios", "scenarios.json", "scenario JSON file")
 	n := flags.Int("n", 5, "runs per scenario")
 	outPath := flags.String("out", "results.jsonl", "append-only JSONL output")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if *configPath == "" {
+		return fmt.Errorf("-config is required")
+	}
 	if *n < 1 {
 		return fmt.Errorf("-n must be at least 1")
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
 	}
 	data, err := os.ReadFile(*scenariosPath)
 	if err != nil {
@@ -315,27 +333,52 @@ func runBench(ctx context.Context, args []string) error {
 	}
 	defer out.Close()
 
-	runner, closeSessions, err := newRunner(ctx, "cli-deny")
+	runner, closeSessions, err := newRunner(ctx, "cli-deny", cfg)
 	if err != nil {
 		return err
 	}
 	defer closeSessions()
+	audit, err := store.Open(cfg.StateDir)
+	if err != nil {
+		return err
+	}
 	byScenario := make(map[string]*aggregate)
 	overall := &aggregate{}
+	var failures []benchFailure
 	encoder := json.NewEncoder(out)
 	for _, scenario := range scenarios {
 		total := &aggregate{}
 		byScenario[scenario.ID] = total
 		for run := 1; run <= *n; run++ {
-			metrics, runErr := runner.Run(ctx, scenario.Question, scenario.ExpectFirstTool)
-			if err := encoder.Encode(benchResult{ScenarioID: scenario.ID, Run: run, Metrics: metrics}); err != nil {
+			investigation, err := audit.Begin(scenario.Question, "cli")
+			if err != nil {
 				return err
 			}
-			addMetrics(total, metrics)
-			addMetrics(overall, metrics)
-			if runErr != nil {
-				return fmt.Errorf("scenario %s run %d: %w", scenario.ID, run, runErr)
+			sink := &investigationSink{investigation: investigation}
+			runner.Events = sink
+			metrics, runErr := runner.Run(ctx, scenario.Question, scenario.ExpectFirstTool)
+			if eventErr := sink.Err(); eventErr != nil {
+				runErr = eventErr
 			}
+			result := benchResult{ScenarioID: scenario.ID, Run: run, Metrics: metrics}
+			if runErr != nil {
+				result.Error = runErr.Error()
+				err = investigation.Append(store.EventFailed, store.FailedPayload{Reason: runErr.Error(), Metrics: metrics})
+				failures = append(failures, benchFailure{scenario.ID, run, runErr.Error()})
+			} else {
+				err = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Metrics: metrics})
+			}
+			if closeErr := investigation.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				return err
+			}
+			if err := encoder.Encode(result); err != nil {
+				return err
+			}
+			addMetrics(total, metrics, runErr == nil)
+			addMetrics(overall, metrics, runErr == nil)
 		}
 	}
 	fmt.Println("scenario\truns\ttool_calls\tmalformed_rate\twrong_first_rate\tmean_rounds\trecovery_rate\tcompletion_rate")
@@ -343,10 +386,16 @@ func runBench(ctx context.Context, args []string) error {
 		printAggregate(scenario.ID, byScenario[scenario.ID])
 	}
 	printAggregate("OVERALL", overall)
+	if len(failures) > 0 {
+		fmt.Println("failures:")
+		for _, failure := range failures {
+			fmt.Printf("%s run %d: %s\n", failure.scenarioID, failure.run, failure.err)
+		}
+	}
 	return nil
 }
 
-func addMetrics(total *aggregate, metrics agent.Metrics) {
+func addMetrics(total *aggregate, metrics agent.Metrics, runSucceeded bool) {
 	total.runs++
 	total.toolCalls += metrics.ToolCallsTotal
 	total.malformed += metrics.MalformedJSON + metrics.SchemaInvalid + metrics.UnknownTool
@@ -355,7 +404,7 @@ func addMetrics(total *aggregate, metrics agent.Metrics) {
 	}
 	total.rounds += metrics.Rounds
 	total.recovered += metrics.Recovered
-	if metrics.Completed {
+	if runSucceeded && metrics.Completed {
 		total.completed++
 	}
 }
@@ -373,50 +422,78 @@ func ratio(numerator, denominator int) float64 {
 	return float64(numerator) / float64(denominator)
 }
 
-func newRunner(ctx context.Context, approverName string) (*agent.Runner, func(), error) {
+type investigationSink struct {
+	investigation *store.Investigation
+	verbose       bool
+	mu            sync.Mutex
+	err           error
+}
+
+func (s *investigationSink) Emit(eventType string, payload any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return
+	}
+	if err := s.investigation.Append(eventType, payload); err != nil {
+		s.err = err
+		return
+	}
+	if s.verbose && eventType == store.EventToolCall {
+		encoded, _ := json.Marshal(payload)
+		var event store.ToolCallPayload
+		if json.Unmarshal(encoded, &event) == nil {
+			args, _ := json.Marshal(event.Args)
+			fmt.Fprintf(os.Stderr, "[round %d] %s %s -> %.300s\n", event.Round, event.Name, args, event.ResultSnippet)
+		}
+	}
+}
+
+func (s *investigationSink) Err() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
+}
+
+func newRunner(ctx context.Context, approverName string, cfg *config.Config) (*agent.Runner, func(), error) {
 	if approverName != "cli-deny" && approverName != "cli-approve" && approverName != "telegram" {
 		return nil, func() {}, fmt.Errorf("unknown approver %q", approverName)
 	}
-	if approverName == "telegram" {
-		if f := os.Getenv("TELEGRAM_ENV_FILE"); f != "" {
-			if err := loadEnvFile(f); err != nil {
-				return nil, func() {}, fmt.Errorf("telegram env file: %w", err)
+	gatedTools := make(map[string]bool, len(cfg.GatedTools))
+	for _, name := range cfg.GatedTools {
+		gatedTools[name] = true
+	}
+	servers := make([]agent.MCPServer, 0, len(cfg.MCPServers))
+	for _, configured := range cfg.MCPServers {
+		configured := configured
+		servers = append(servers, agent.MCPServer{Name: configured.Name, Connect: func(connectCtx context.Context) (agent.MCPSession, error) {
+			var transport http.RoundTripper = http.DefaultTransport
+			if auth := configured.AuthHeader.Value(); auth != "" {
+				transport = &headerRoundTripper{base: http.DefaultTransport, headers: map[string]string{"Authorization": auth}}
 			}
-		}
+			client := mcp.NewClient(&mcp.Implementation{Name: "shackleton-spike", Version: "0.0.1"}, nil)
+			return client.Connect(connectCtx, &mcp.StreamableClientTransport{
+				Endpoint:   configured.URL,
+				HTTPClient: &http.Client{Transport: transport, Timeout: cfg.Agent.CallTimeout.Duration()},
+			}, nil)
+		}})
 	}
-	sessions := make([]*mcp.ClientSession, 0, 2)
-	for _, endpoint := range []string{"http://127.0.0.1:8100/mcp", "http://127.0.0.1:8000/mcp"} {
-		client := mcp.NewClient(&mcp.Implementation{Name: "shackleton-spike", Version: "0.0.1"}, nil)
-		session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
-			Endpoint:   endpoint,
-			HTTPClient: &http.Client{Timeout: 30 * time.Second},
-		}, nil)
-		if err != nil {
-			for _, opened := range sessions {
-				opened.Close()
-			}
-			return nil, func() {}, fmt.Errorf("%s: connect: %w", endpoint, err)
-		}
-		sessions = append(sessions, session)
-	}
-	closeSessions := func() {
-		for _, session := range sessions {
-			session.Close()
-		}
-	}
-	auth := os.Getenv("PROMETHEUS_AUTH_HEADER")
 	thanosClient := &http.Client{Transport: &headerRoundTripper{
-		base: http.DefaultTransport, headers: map[string]string{"Authorization": auth},
-	}, Timeout: 30 * time.Second}
-	registry, err := agent.NewRegistry(ctx, sessions, thanosClient, envOr("THANOS_URL", "https://thanos-querier-openshift-monitoring.apps.ocp.lab.orbital.home"))
+		base: http.DefaultTransport, headers: map[string]string{"Authorization": cfg.Prometheus.AuthHeader.Value()},
+	}, Timeout: cfg.Agent.CallTimeout.Duration()}
+	registry, err := agent.NewRegistry(ctx, servers, gatedTools, thanosClient, cfg.Prometheus.URL)
 	if err != nil {
-		closeSessions()
 		return nil, func() {}, err
 	}
-	openAIClient := openai.NewClient(option.WithBaseURL(envOr("OPENAI_API_BASE", defaultBase)), option.WithAPIKey(os.Getenv("OPENAI_API_KEY")))
+	closeSessions := func() { _ = registry.Close() }
+	openAIClient := openai.NewClient(option.WithBaseURL(cfg.Model.BaseURL), option.WithAPIKey(cfg.Model.APIKey.Value()))
 	runner := &agent.Runner{
-		Complete: agent.StreamCompleter(openAIClient, envOr("SPIKE_MODEL", "qwen-a3b-thinking")),
-		Tools:    registry,
+		Complete:             agent.StreamCompleter(openAIClient, cfg.Model.Name),
+		Tools:                registry,
+		ApprovalVia:          approverName,
+		MaxRounds:            cfg.Agent.MaxRounds,
+		CallTimeout:          cfg.Agent.CallTimeout.Duration(),
+		InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration(),
 	}
 	switch approverName {
 	case "cli-deny":

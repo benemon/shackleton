@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/benemon/shackleton/internal/config"
 )
 
 func TestLoadEnvFilePreservesExistingEnvironment(t *testing.T) {
@@ -13,7 +15,7 @@ func TestLoadEnvFilePreservesExistingEnvironment(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# comment\nSHACKLETON_EXISTING=from-file\nSHACKLETON_LOADED='value with spaces'\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := loadEnvFile(path); err != nil {
+	if err := config.LoadEnvFile(path); err != nil {
 		t.Fatal(err)
 	}
 	if got := os.Getenv("SHACKLETON_EXISTING"); got != "from-environment" {

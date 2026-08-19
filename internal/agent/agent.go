@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -26,6 +27,10 @@ type Approver interface {
 
 type Notifier interface {
 	Send(ctx context.Context, text string) error
+}
+
+type EventSink interface {
+	Emit(eventType string, payload any)
 }
 
 type Metrics struct {
@@ -57,19 +62,38 @@ type ModelMessage struct {
 type CompletionFunc func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (ModelMessage, error)
 
 type Runner struct {
-	Complete            CompletionFunc
-	Tools               *Registry
-	Approver            Approver
-	Notifier            Notifier
-	MaxRounds           int
-	MaxMalformedRetries int
-	CallTimeout         time.Duration
-	Trace               func(round int, name, args, result string)
+	Complete             CompletionFunc
+	Tools                *Registry
+	Approver             Approver
+	ApprovalVia          string
+	Notifier             Notifier
+	MaxRounds            int
+	MaxMalformedRetries  int
+	CallTimeout          time.Duration
+	InvestigationTimeout time.Duration
+	Events               EventSink
 }
 
 func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (metrics Metrics, err error) {
 	started := time.Now()
 	defer func() { metrics.Duration = time.Since(started) }()
+	parentCtx := ctx
+	var investigationDeadline time.Time
+	if r.InvestigationTimeout > 0 {
+		investigationDeadline = time.Now().Add(r.InvestigationTimeout)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, investigationDeadline)
+		defer cancel()
+	}
+	wallClockExceeded := func() bool {
+		return !investigationDeadline.IsZero() && !time.Now().Before(investigationDeadline) &&
+			errors.Is(ctx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil
+	}
+	finishWallClock := func() (Metrics, error) {
+		metrics.Completed = false
+		metrics.Answer = "wall clock exceeded"
+		return metrics, nil
+	}
 	maxRounds := r.MaxRounds
 	if maxRounds == 0 {
 		maxRounds = 8
@@ -91,8 +115,14 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 
 	for metrics.Rounds < maxRounds {
 		metrics.Rounds++
+		if metrics.Rounds == maxRounds {
+			messages = append(messages, openai.UserMessage("Budget check: this is your final round. Do not call more tools unless strictly necessary - give your best concise answer from what you already know."))
+		}
 		msg, completeErr := r.Complete(ctx, messages, r.Tools.OpenAITools())
 		if completeErr != nil {
+			if wallClockExceeded() {
+				return finishWallClock()
+			}
 			return metrics, completeErr
 		}
 		messages = append(messages, assistantMessage(msg))
@@ -101,6 +131,9 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 			metrics.Answer = msg.Content
 			if r.Notifier != nil {
 				if notifyErr := r.Notifier.Send(ctx, msg.Content); notifyErr != nil {
+					if wallClockExceeded() {
+						return finishWallClock()
+					}
 					return metrics, notifyErr
 				}
 			}
@@ -113,11 +146,18 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 				metrics.WrongFirstTool = expectFirstTool != "" && raw.Name != expectFirstTool
 				first = false
 			}
-			result, malformedCall := r.handleCall(ctx, raw, callTimeout, &metrics)
-			if r.Trace != nil {
-				r.Trace(metrics.Rounds, raw.Name, raw.Arguments, result)
+			result := r.handleCall(ctx, raw, callTimeout, &metrics)
+			r.emit("tool_call", struct {
+				Round         int    `json:"round"`
+				Name          string `json:"name"`
+				Args          any    `json:"args"`
+				ResultSnippet string `json:"result_snippet"`
+				Error         bool   `json:"error"`
+			}{metrics.Rounds, raw.Name, result.args, truncateRunes(result.text, 2000), result.errored})
+			if wallClockExceeded() {
+				return finishWallClock()
 			}
-			if malformedCall {
+			if result.malformed {
 				malformed[raw.Name]++
 				if malformed[raw.Name] > maxMalformed {
 					return metrics, fmt.Errorf("tool %s exceeded malformed retry limit", raw.Name)
@@ -126,45 +166,62 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 				metrics.Recovered += malformed[raw.Name]
 				delete(malformed, raw.Name)
 			}
-			messages = append(messages, openai.ToolMessage(result, raw.ID))
+			messages = append(messages, openai.ToolMessage(result.text, raw.ID))
 		}
 	}
 	metrics.Answer = "round limit reached"
 	return metrics, nil
 }
 
-func (r *Runner) handleCall(ctx context.Context, raw ModelToolCall, timeout time.Duration, metrics *Metrics) (string, bool) {
+type callResult struct {
+	text      string
+	args      any
+	malformed bool
+	errored   bool
+}
+
+func (r *Runner) handleCall(ctx context.Context, raw ModelToolCall, timeout time.Duration, metrics *Metrics) callResult {
 	entry, ok := r.Tools.tools[raw.Name]
 	if !ok {
 		metrics.UnknownTool++
-		return fmt.Sprintf("Tool error: unknown tool %q. Use one of the declared tools and retry.", raw.Name), true
+		return callResult{fmt.Sprintf("Tool error: unknown tool %q. Use one of the declared tools and retry.", raw.Name), raw.Arguments, true, true}
 	}
 	var decoded any
 	if err := json.Unmarshal([]byte(raw.Arguments), &decoded); err != nil {
 		metrics.MalformedJSON++
-		return fmt.Sprintf("Tool argument error for %s: invalid JSON: %v. Correct the JSON and retry.", raw.Name, err), true
+		return callResult{fmt.Sprintf("Tool argument error for %s: invalid JSON: %v. Correct the JSON and retry.", raw.Name, err), raw.Arguments, true, true}
 	}
 	if err := entry.schema.Validate(decoded); err != nil {
 		metrics.SchemaInvalid++
-		return fmt.Sprintf("Tool argument error for %s: JSON schema validation failed: %v. Correct the arguments and retry.", raw.Name, err), true
+		return callResult{fmt.Sprintf("Tool argument error for %s: JSON schema validation failed: %v. Correct the arguments and retry.", raw.Name, err), decoded, true, true}
 	}
 	args, ok := decoded.(map[string]any)
 	if !ok {
 		metrics.SchemaInvalid++
-		return fmt.Sprintf("Tool argument error for %s: JSON schema validation failed: arguments must be an object. Correct the arguments and retry.", raw.Name), true
+		return callResult{fmt.Sprintf("Tool argument error for %s: JSON schema validation failed: arguments must be an object. Correct the arguments and retry.", raw.Name), decoded, true, true}
 	}
 	call := ToolCall{Name: raw.Name, ArgsJSON: raw.Arguments, Args: args, ID: raw.ID, Human: humanRendering(raw.Name, args)}
 	if entry.gated {
 		if r.Approver == nil {
-			return "Tool error: approval is required but no approver is configured.", false
+			return callResult{"Tool error: approval is required but no approver is configured.", args, false, true}
 		}
+		r.emit("approval_requested", struct {
+			CallID string `json:"call_id"`
+			Name   string `json:"name"`
+			Human  string `json:"human"`
+		}{call.ID, call.Name, call.Human})
 		approved, err := r.Approver.RequestApproval(ctx, call)
 		if err != nil {
-			return "Tool error: approval failed: " + err.Error(), false
+			return callResult{"Tool error: approval failed: " + err.Error(), args, false, true}
 		}
+		r.emit("approval_decided", struct {
+			CallID   string `json:"call_id"`
+			Approved bool   `json:"approved"`
+			Via      string `json:"via"`
+		}{call.ID, approved, r.ApprovalVia})
 		if !approved {
 			metrics.Denied++
-			return "denied by operator", false
+			return callResult{"denied by operator", args, false, false}
 		}
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -172,9 +229,23 @@ func (r *Runner) handleCall(ctx context.Context, raw ModelToolCall, timeout time
 	result, err := entry.call(callCtx, args)
 	if err != nil {
 		metrics.ToolErrors++
-		return "Tool error: " + err.Error(), false
+		return callResult{"Tool error: " + err.Error(), args, false, true}
 	}
-	return result, false
+	return callResult{result, args, false, false}
+}
+
+func (r *Runner) emit(eventType string, payload any) {
+	if r.Events != nil {
+		r.Events.Emit(eventType, payload)
+	}
+}
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }
 
 func assistantMessage(msg ModelMessage) openai.ChatCompletionMessageParamUnion {

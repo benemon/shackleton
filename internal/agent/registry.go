@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
@@ -25,34 +26,121 @@ type toolEntry struct {
 	call        func(context.Context, map[string]any) (string, error)
 }
 
-type Registry struct{ tools map[string]toolEntry }
+type Registry struct {
+	tools    map[string]toolEntry
+	sessions []*reconnectingSession
+}
 
-func NewRegistry(ctx context.Context, sessions []*mcp.ClientSession, thanosClient *http.Client, thanosURL string) (*Registry, error) {
+type MCPSession interface {
+	ListTools(context.Context, *mcp.ListToolsParams) (*mcp.ListToolsResult, error)
+	CallTool(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error)
+	Ping(context.Context, *mcp.PingParams) error
+	Close() error
+}
+
+type MCPConnectFunc func(context.Context) (MCPSession, error)
+
+type MCPServer struct {
+	Name    string
+	Connect MCPConnectFunc
+}
+
+type reconnectingSession struct {
+	mu      sync.Mutex
+	connect MCPConnectFunc
+	session MCPSession
+}
+
+func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string]bool, thanosClient *http.Client, thanosURL string) (*Registry, error) {
 	r := &Registry{tools: make(map[string]toolEntry)}
-	for _, session := range sessions {
-		listed, err := session.ListTools(ctx, nil)
+	for _, server := range servers {
+		session, err := server.Connect(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list MCP tools: %w", err)
+			r.Close()
+			return nil, fmt.Errorf("%s: connect: %w", server.Name, err)
+		}
+		reconnecting := &reconnectingSession{connect: server.Connect, session: session}
+		listed, err := reconnecting.listTools(ctx)
+		if err != nil {
+			reconnecting.close()
+			r.Close()
+			return nil, fmt.Errorf("%s: list MCP tools: %w", server.Name, err)
 		}
 		for _, tool := range listed.Tools {
 			tool := tool
-			if err := r.add(tool.Name, tool.Description, tool.InputSchema, tool.Name == "run_host_command" || tool.Name == "run_kubectl_command", func(ctx context.Context, args map[string]any) (string, error) {
-				result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: args})
+			// A gated call is never re-executed: after an ambiguous transport
+			// death the original may already have run, and mutations must not
+			// run twice. The session still reconnects for subsequent calls.
+			retry := !gatedTools[tool.Name]
+			if err := r.add(tool.Name, tool.Description, tool.InputSchema, gatedTools[tool.Name], func(ctx context.Context, args map[string]any) (string, error) {
+				result, err := reconnecting.callTool(ctx, &mcp.CallToolParams{Name: tool.Name, Arguments: args}, retry)
 				if err != nil {
 					return "", err
 				}
 				return mcpResultText(result), nil
 			}); err != nil {
+				reconnecting.close()
+				r.Close()
 				return nil, err
 			}
 		}
+		r.sessions = append(r.sessions, reconnecting)
 	}
 	if thanosClient != nil {
 		if err := r.addNativeThanos(thanosClient, strings.TrimRight(thanosURL, "/")); err != nil {
+			r.Close()
 			return nil, err
 		}
 	}
 	return r, nil
+}
+
+func (r *Registry) Close() error {
+	var first error
+	for _, session := range r.sessions {
+		if err := session.close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (s *reconnectingSession) listTools(ctx context.Context) (*mcp.ListToolsResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.session.ListTools(ctx, nil)
+}
+
+func (s *reconnectingSession) callTool(ctx context.Context, params *mcp.CallToolParams, retry bool) (*mcp.CallToolResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, originalErr := s.session.CallTool(ctx, params)
+	if originalErr == nil {
+		return result, nil
+	}
+	if s.session.Ping(ctx, nil) == nil {
+		return nil, originalErr
+	}
+	replacement, err := s.connect(ctx)
+	if err != nil {
+		return nil, originalErr
+	}
+	_ = s.session.Close()
+	s.session = replacement
+	if !retry {
+		return nil, originalErr
+	}
+	result, err = s.session.CallTool(ctx, params)
+	if err != nil {
+		return nil, originalErr
+	}
+	return result, nil
+}
+
+func (s *reconnectingSession) close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.session.Close()
 }
 
 func (r *Registry) OpenAITools() []openai.ChatCompletionToolUnionParam {

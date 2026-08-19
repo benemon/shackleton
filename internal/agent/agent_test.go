@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
 )
 
@@ -114,5 +116,133 @@ func TestPerCallTimeout(t *testing.T) {
 	metrics, err := runner.Run(context.Background(), "question", "")
 	if err != nil || !metrics.Completed {
 		t.Fatalf("run failed: metrics=%+v err=%v", metrics, err)
+	}
+}
+
+func TestInvestigationTimeoutReturnsOutcomeWithPartialMetrics(t *testing.T) {
+	runner := Runner{
+		Tools:                testRegistry(t, new(int)),
+		InvestigationTimeout: 10 * time.Millisecond,
+		Complete: func(ctx context.Context, _ []openai.ChatCompletionMessageParamUnion, _ []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+			<-ctx.Done()
+			return ModelMessage{}, ctx.Err()
+		},
+	}
+	metrics, err := runner.Run(context.Background(), "question", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.Rounds != 1 || metrics.Completed || metrics.Answer != "wall clock exceeded" {
+		t.Fatalf("timeout metrics = %+v", metrics)
+	}
+}
+
+func TestFinalRoundNudgeAppearsExactlyOnceAtCap(t *testing.T) {
+	called := 0
+	completion := 0
+	runner := Runner{
+		Tools: testRegistry(t, &called), MaxRounds: 2,
+		Complete: func(_ context.Context, history []openai.ChatCompletionMessageParamUnion, _ []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+			completion++
+			count := 0
+			for _, message := range history {
+				if message.OfUser != nil && message.OfUser.Content.OfString.Value == "Budget check: this is your final round. Do not call more tools unless strictly necessary - give your best concise answer from what you already know." {
+					count++
+				}
+			}
+			want := 0
+			if completion == 2 {
+				want = 1
+			}
+			if count != want {
+				t.Fatalf("completion %d nudge count = %d, want %d", completion, count, want)
+			}
+			if completion == 1 {
+				return ModelMessage{ToolCalls: []ModelToolCall{{Name: "query_prometheus_instant", Arguments: `{"query":"up"}`, ID: "one"}}}, nil
+			}
+			return ModelMessage{Content: "done"}, nil
+		},
+	}
+	metrics, err := runner.Run(context.Background(), "question", "")
+	if err != nil || !metrics.Completed || metrics.Answer != "done" {
+		t.Fatalf("metrics = %+v, error = %v", metrics, err)
+	}
+}
+
+type fakeMCPSession struct {
+	callErr error
+	pingErr error
+	result  string
+	calls   int
+}
+
+func (s *fakeMCPSession) ListTools(context.Context, *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
+	return &mcp.ListToolsResult{Tools: []*mcp.Tool{{
+		Name: "repair", Description: "repair", InputSchema: map[string]any{"type": "object"},
+	}}}, nil
+}
+
+func (s *fakeMCPSession) CallTool(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	s.calls++
+	if s.callErr != nil {
+		return nil, s.callErr
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s.result}}}, nil
+}
+
+func (s *fakeMCPSession) Ping(context.Context, *mcp.PingParams) error { return s.pingErr }
+func (s *fakeMCPSession) Close() error                                { return nil }
+
+func TestRegistryReconnectsAndRetriesFailedToolCall(t *testing.T) {
+	connects := 0
+	sessions := []*fakeMCPSession{
+		{callErr: errors.New("connection reset"), pingErr: errors.New("dead session")},
+		{result: "recovered result"},
+	}
+	connect := func(context.Context) (MCPSession, error) {
+		session := sessions[connects]
+		connects++
+		return session, nil
+	}
+	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}}, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	result, err := registry.tools["repair"].call(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "recovered result" || connects != 2 {
+		t.Fatalf("result = %q, connects = %d", result, connects)
+	}
+}
+
+func TestRegistryNeverRetriesGatedToolCall(t *testing.T) {
+	connects := 0
+	sessions := []*fakeMCPSession{
+		{callErr: errors.New("connection reset"), pingErr: errors.New("dead session")},
+		{result: "would be a double execution"},
+	}
+	connect := func(context.Context) (MCPSession, error) {
+		session := sessions[connects]
+		connects++
+		return session, nil
+	}
+	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}},
+		map[string]bool{"repair": true}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	_, err = registry.tools["repair"].call(context.Background(), map[string]any{})
+	if err == nil || err.Error() != "connection reset" {
+		t.Fatalf("gated call error = %v, want original transport error", err)
+	}
+	if connects != 2 {
+		t.Fatalf("connects = %d, want 2 (session refreshed for later calls)", connects)
+	}
+	if sessions[1].calls != 0 {
+		t.Fatalf("gated tool was re-executed on the fresh session (%d calls)", sessions[1].calls)
 	}
 }

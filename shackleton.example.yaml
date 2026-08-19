@@ -1,0 +1,37 @@
+# Address reserved for the future API listener.
+listen: "127.0.0.1:8420"
+# Directory containing investigation audit state.
+state_dir: /var/lib/shackleton
+# Dotenv files loaded before secret references are resolved.
+env_files: [/opt/holmes/env]
+model:
+  # OpenAI-compatible model API base URL.
+  base_url: https://model.example.invalid/v1
+  # Model identifier sent with completion requests.
+  name: example-model
+  # Environment variable containing the model API key.
+  api_key: {env: OPENAI_API_KEY}
+mcp_servers:
+  # Name used to identify this MCP server in errors.
+  - name: host-remediation
+    # Streamable HTTP MCP endpoint.
+    url: http://127.0.0.1:8100/mcp
+    # Optional environment variable containing the complete Authorization header.
+    auth_header: {env: MCP_AUTH_HEADER}
+prometheus:
+  # Base URL of the Prometheus-compatible query API.
+  url: https://prometheus.example.invalid
+  # Environment variable containing the complete Authorization header.
+  auth_header: {env: PROMETHEUS_AUTH_HEADER}
+# MCP tool names that require operator approval.
+gated_tools: [run_host_command, run_kubectl_command]
+telegram:
+  # Optional dotenv file defining TG_BOT_TOKEN and TG_CHAT_ID.
+  env_file: /etc/shackleton/telegram.env
+agent:
+  # Maximum model completion rounds per investigation.
+  max_rounds: 8
+  # Timeout applied to each individual tool call.
+  call_timeout: 30s
+  # Wall-clock limit for a complete investigation.
+  investigation_timeout: 10m
