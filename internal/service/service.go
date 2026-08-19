@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -136,12 +138,23 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 		if eventErr := sink.Err(); eventErr != nil {
 			runErr = eventErr
 		}
+		status := "completed"
 		if runErr != nil {
+			status = "failed"
 			_ = investigation.Append(store.EventFailed, store.FailedPayload{Reason: runErr.Error(), Metrics: metrics})
 		} else {
 			_ = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Metrics: metrics})
 		}
 		_ = investigation.Close()
+		class := triggerClass(trigger)
+		investigationsTotal.WithLabelValues(class, status).Inc()
+		investigationSeconds.WithLabelValues(class).Observe(metrics.Duration.Seconds())
+		toolCallsTotal.Add(float64(metrics.ToolCallsTotal))
+		toolCallErrors.WithLabelValues("malformed_json").Add(float64(metrics.MalformedJSON))
+		toolCallErrors.WithLabelValues("schema_invalid").Add(float64(metrics.SchemaInvalid))
+		toolCallErrors.WithLabelValues("unknown_tool").Add(float64(metrics.UnknownTool))
+		toolCallErrors.WithLabelValues("tool_error").Add(float64(metrics.ToolErrors))
+		toolCallsRecovered.Add(float64(metrics.Recovered))
 	}()
 	return summary, nil
 }
@@ -279,8 +292,41 @@ func (s *Service) DecideApproval(id string, approved bool, via string) error {
 	decision := agent.Decision{Approved: approved, Via: via}
 	s.publishApprovalLocked(ApprovalEvent{Type: "settled", Approval: pending.PendingApproval, Approved: approved, Via: via})
 	s.mu.Unlock()
+	approvalDecisions.WithLabelValues(via, strconv.FormatBool(approved)).Inc()
 	pending.decision <- decision
 	return nil
+}
+
+type AuditEntry struct {
+	InvestigationID string          `json:"investigation_id"`
+	TS              time.Time       `json:"ts"`
+	Type            string          `json:"type"`
+	Payload         json.RawMessage `json:"payload"`
+}
+
+// AuditTrail projects the mutating operations across all investigations,
+// newest first, from the store's append-only records.
+func (s *Service) AuditTrail() ([]AuditEntry, error) {
+	entries := []AuditEntry{}
+	for _, summary := range s.store.List() {
+		events, err := s.store.Get(summary.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, event := range events {
+			switch event.Type {
+			case store.EventCreated, store.EventApprovalRequested, store.EventApprovalDecided:
+				entries = append(entries, AuditEntry{InvestigationID: summary.ID, TS: event.TS, Type: event.Type, Payload: event.Payload})
+			}
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].TS.Equal(entries[j].TS) {
+			return entries[i].InvestigationID > entries[j].InvestigationID
+		}
+		return entries[i].TS.After(entries[j].TS)
+	})
+	return entries, nil
 }
 
 func (s *Service) ConfigView() ConfigView {
@@ -378,6 +424,7 @@ func (s *Service) removePending(id string, want *pendingApproval) bool {
 	}
 	delete(s.pending, id)
 	s.publishApprovalLocked(ApprovalEvent{Type: "settled", Approval: want.PendingApproval, Approved: false, Via: "timeout"})
+	approvalDecisions.WithLabelValues("timeout", "false").Inc()
 	return true
 }
 

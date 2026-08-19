@@ -20,6 +20,7 @@ import (
 	"github.com/benemon/shackleton/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 type approvalSession struct{}
@@ -246,6 +247,8 @@ func TestEveryRouteRequiresBearerToken(t *testing.T) {
 		{http.MethodGet, "/v1/approvals", ""},
 		{http.MethodGet, "/v1/approvals/events", ""},
 		{http.MethodPost, "/v1/approvals/missing/decision", `{"approved":true}`},
+		{http.MethodGet, "/v1/audit", ""},
+		{http.MethodGet, "/metrics", ""},
 		{http.MethodGet, "/v1/config", ""},
 		{http.MethodGet, "/v1/health", ""},
 	}
@@ -636,5 +639,88 @@ func TestDecidedTombstonesAreBounded(t *testing.T) {
 	}
 	if err := service.DecideApproval(last, true, "test"); !errors.Is(err, ErrApprovalAlreadyDecided) {
 		t.Fatalf("recent tombstone error = %v", err)
+	}
+}
+
+func TestAuditTrailProjectsMutatingEventsNewestFirst(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := audit.Begin("q1", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Append(store.EventToolCall, store.ToolCallPayload{Round: 1, Name: "lookup"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Append(store.EventApprovalRequested, store.ApprovalRequestedPayload{CallID: "c1", Name: "repair", Human: "fix"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Append(store.EventApprovalDecided, store.ApprovalDecidedPayload{CallID: "c1", Approved: true, Via: "api"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Append(store.EventCompleted, store.CompletedPayload{Answer: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := audit.Begin("q2", "telegram")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	service := New(context.Background(), audit, nil, nil)
+	entries, err := service.AuditTrail()
+	if err != nil {
+		t.Fatal(err)
+	}
+	types := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		types = append(types, entry.Type)
+	}
+	want := []string{store.EventCreated, store.EventApprovalDecided, store.EventApprovalRequested, store.EventCreated}
+	if len(types) != len(want) {
+		t.Fatalf("audit types = %v", types)
+	}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("audit types = %v, want %v", types, want)
+		}
+	}
+	if entries[0].InvestigationID != second.ID {
+		t.Fatalf("newest entry from %s, want %s", entries[0].InvestigationID, second.ID)
+	}
+}
+
+func TestInvestigationMetricsUseTriggerClass(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(context.Background(), audit, testConfig(t), completedRunnerFactory(t, "answer"))
+	before := testutil.ToFloat64(investigationsTotal.WithLabelValues("alert", "completed"))
+	if _, err := service.CreateInvestigation(context.Background(), "q", "alert:deadbeef99"); err != nil {
+		t.Fatal(err)
+	}
+	service.Wait()
+	if got := testutil.ToFloat64(investigationsTotal.WithLabelValues("alert", "completed")) - before; got != 1 {
+		t.Fatalf("alert/completed delta = %v, want 1", got)
+	}
+}
+
+func TestApprovalDecisionMetricByViaAndOutcome(t *testing.T) {
+	service := New(context.Background(), nil, nil, nil)
+	pending, err := service.addPending("inv", agent.ToolCall{ID: "c", Name: "repair"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := testutil.ToFloat64(approvalDecisions.WithLabelValues("telegram", "false"))
+	if err := service.DecideApproval(pending.ID, false, "telegram"); err != nil {
+		t.Fatal(err)
+	}
+	if got := testutil.ToFloat64(approvalDecisions.WithLabelValues("telegram", "false")) - before; got != 1 {
+		t.Fatalf("telegram/false delta = %v, want 1", got)
 	}
 }

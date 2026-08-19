@@ -154,6 +154,34 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
+  /v1/audit:
+    get:
+      operationId: getAuditTrail
+      responses:
+        '200':
+          description: Mutating operations across all investigations, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /metrics:
+    get:
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Prometheus exposition text
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/config:
     get:
       operationId: getConfig
@@ -458,6 +486,24 @@ components:
           type: boolean
         via:
           type: string
+    AuditEntry:
+      type: object
+      additionalProperties: false
+      required: [investigation_id, ts, type, payload]
+      properties:
+        investigation_id:
+          type: string
+        ts:
+          type: string
+          format: date-time
+        type:
+          type: string
+          enum: [created, approval_requested, approval_decided]
+        payload:
+          oneOf:
+            - $ref: '#/components/schemas/CreatedPayload'
+            - $ref: '#/components/schemas/ApprovalRequestedPayload'
+            - $ref: '#/components/schemas/ApprovalDecidedPayload'
     SecretRef:
       oneOf:
         - type: object

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/benemon/shackleton/internal/store"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func NewHTTP(service *Service, token string) http.Handler {
@@ -23,8 +24,10 @@ func NewHTTP(service *Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/approvals", service.listApprovals)
 	mux.HandleFunc("GET /v1/approvals/events", service.followApprovals)
 	mux.HandleFunc("POST /v1/approvals/{id}/decision", service.decideApproval)
+	mux.HandleFunc("GET /v1/audit", service.getAudit)
 	mux.HandleFunc("GET /v1/config", service.getConfig)
 	mux.HandleFunc("GET /v1/health", service.getHealth)
+	mux.Handle("GET /metrics", promhttp.Handler())
 	return bearerAuth(mux, token)
 }
 
@@ -190,6 +193,15 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
 		Approved bool `json:"approved"`
 	}{*request.Approved})
+}
+
+func (s *Service) getAudit(w http.ResponseWriter, _ *http.Request) {
+	entries, err := s.AuditTrail()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 func (s *Service) getConfig(w http.ResponseWriter, _ *http.Request) {
