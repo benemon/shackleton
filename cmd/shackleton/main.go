@@ -1,6 +1,7 @@
-// Command spike is the shk-b1l go/no-go probe harness. It runs on the NAS
-// (the MCP servers are localhost-only, firewalled to uid 0) with
-// /opt/holmes/env sourced; credentials never leave that host.
+// Command shackleton is a self-hosted AI ops investigation daemon; the
+// llm/mcp/thanos probes and agent/bench subcommands are its development
+// harness. Deployments run it on the host that can reach the MCP servers;
+// credentials never leave that host.
 package main
 
 import (
@@ -31,12 +32,15 @@ import (
 
 const defaultBase = "https://litellm.apps.ocp.lab.orbital.home/v1"
 
+// version is stamped by the Makefile via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: spike <llm|mcp|thanos|agent|bench|serve>")
+		fmt.Fprintln(os.Stderr, "usage: shackleton <llm|mcp|thanos|agent|bench|serve|version>")
 		os.Exit(2)
 	}
-	if f := os.Getenv("SPIKE_ENV_FILE"); f != "" {
+	if f := os.Getenv("SHACKLETON_ENV_FILE"); f != "" {
 		if err := config.LoadEnvFile(f); err != nil {
 			fmt.Fprintf(os.Stderr, "FAIL: env file: %v\n", err)
 			os.Exit(1)
@@ -63,6 +67,9 @@ func main() {
 	case "serve":
 		probe = false
 		err = runServe(context.Background(), os.Args[2:])
+	case "version":
+		probe = false
+		fmt.Println(version)
 	default:
 		err = fmt.Errorf("unknown probe %q", os.Args[1])
 	}
@@ -129,7 +136,7 @@ func probeLLM(ctx context.Context) error {
 	}
 
 	params := openai.ChatCompletionNewParams{
-		Model: envOr("SPIKE_MODEL", "qwen-a3b-thinking"),
+		Model: envOr("SHACKLETON_MODEL", "qwen-a3b-thinking"),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage("You are an infrastructure investigation agent. Use the provided tools to answer; do not guess."),
 			openai.UserMessage("What is the current 5-minute load average on host nas?"),
@@ -168,7 +175,7 @@ func probeLLM(ctx context.Context) error {
 
 func probeMCP(ctx context.Context) error {
 	for _, ep := range []string{"http://127.0.0.1:8100/mcp", "http://127.0.0.1:8000/mcp"} {
-		client := mcp.NewClient(&mcp.Implementation{Name: "shackleton-spike", Version: "0.0.1"}, nil)
+		client := mcp.NewClient(&mcp.Implementation{Name: "shackleton", Version: "0.0.1"}, nil)
 		transport := &mcp.StreamableClientTransport{
 			Endpoint: ep,
 			// Header injection through a custom client: the servers ignore the
@@ -177,7 +184,7 @@ func probeMCP(ctx context.Context) error {
 			HTTPClient: &http.Client{
 				Transport: &headerRoundTripper{
 					base:    http.DefaultTransport,
-					headers: map[string]string{"Authorization": "Bearer spike-injection-test"},
+					headers: map[string]string{"Authorization": "Bearer shackleton-injection-test"},
 				},
 				Timeout: 30 * time.Second,
 			},
@@ -241,7 +248,7 @@ func runAgent(ctx context.Context, args []string) error {
 		return err
 	}
 	if *configPath == "" || flags.NArg() != 1 {
-		return fmt.Errorf("usage: spike agent -config=<path> [-approver=cli-deny|cli-approve|telegram] [-v] \"<question>\"")
+		return fmt.Errorf("usage: shackleton agent -config=<path> [-approver=cli-deny|cli-approve|telegram] [-v] \"<question>\"")
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -292,7 +299,7 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	if *configPath == "" || flags.NArg() != 0 {
-		return fmt.Errorf("usage: spike serve -config=<path>")
+		return fmt.Errorf("usage: shackleton serve -config=<path>")
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -589,7 +596,7 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFa
 			if auth := configured.AuthHeader.Value(); auth != "" {
 				transport = &headerRoundTripper{base: http.DefaultTransport, headers: map[string]string{"Authorization": auth}}
 			}
-			client := mcp.NewClient(&mcp.Implementation{Name: "shackleton-spike", Version: "0.0.1"}, nil)
+			client := mcp.NewClient(&mcp.Implementation{Name: "shackleton", Version: "0.0.1"}, nil)
 			return client.Connect(connectCtx, &mcp.StreamableClientTransport{
 				Endpoint:   configured.URL,
 				HTTPClient: &http.Client{Transport: transport, Timeout: cfg.Agent.CallTimeout.Duration()},

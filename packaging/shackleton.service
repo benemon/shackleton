@@ -1,0 +1,18 @@
+# ReadWritePaths must match the config's state_dir.
+[Unit]
+Description=Shackleton AI ops investigation daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/shackleton serve -config=/etc/shackleton/shackleton.yaml
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=yes
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/var/lib/shackleton
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
