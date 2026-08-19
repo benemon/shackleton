@@ -1,0 +1,23 @@
+{
+  "name": "shackleton-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "types": "openapi-typescript ../api/openapi.yaml -o src/generated/api.d.ts"
+  },
+  "dependencies": {
+    "@patternfly/react-core": "^6.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "openapi-typescript": "^7.4.0",
+    "typescript": "^5.6.0",
+    "vite": "^7.0.0"
+  }
+}

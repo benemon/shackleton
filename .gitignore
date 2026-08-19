@@ -18,3 +18,5 @@ kubeconfig*
 .DS_Store
 .idea/
 .vscode/
+ui/node_modules/
+ui/dist/

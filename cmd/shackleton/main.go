@@ -24,6 +24,7 @@ import (
 	"github.com/benemon/shackleton/internal/store"
 	"github.com/benemon/shackleton/internal/sweep"
 	"github.com/benemon/shackleton/internal/telegram"
+	"github.com/benemon/shackleton/ui"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -345,7 +346,12 @@ func runServe(ctx context.Context, args []string) error {
 	if len(cfg.Sweeps) > 0 {
 		sweep.Run(investigationCtx, cfg.Sweeps, core, notifier)
 	}
-	server := &http.Server{Addr: cfg.Listen, Handler: service.NewHTTP(core, cfg.APIToken.Value())}
+	api := service.NewHTTP(core, cfg.APIToken.Value())
+	root := http.NewServeMux()
+	root.Handle("/v1/", api)
+	root.Handle("/metrics", api)
+	root.Handle("/", ui.Handler())
+	server := &http.Server{Addr: cfg.Listen, Handler: root}
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.ListenAndServe() }()
 
