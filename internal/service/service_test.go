@@ -242,6 +242,7 @@ func TestEveryRouteRequiresBearerToken(t *testing.T) {
 		{http.MethodGet, "/v1/investigations", ""},
 		{http.MethodGet, "/v1/investigations/missing", ""},
 		{http.MethodGet, "/v1/investigations/missing/events", ""},
+		{http.MethodPost, "/v1/alerts", `{"alerts":[]}`},
 		{http.MethodGet, "/v1/approvals", ""},
 		{http.MethodGet, "/v1/approvals/events", ""},
 		{http.MethodPost, "/v1/approvals/missing/decision", `{"approved":true}`},
@@ -509,5 +510,90 @@ func waitForSSE(t *testing.T, events <-chan string, scanErrors <-chan error, wan
 		t.Fatalf("SSE stream ended before %q: %v", want, err)
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for SSE event %q", want)
+	}
+}
+
+func blockingRunnerFactory(t *testing.T) RunnerFactory {
+	t.Helper()
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		return &agent.Runner{
+			Tools: registry, Events: events, Approver: approver,
+			Complete: func(ctx context.Context, _ []openai.ChatCompletionMessageParamUnion, _ []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+				<-ctx.Done()
+				return agent.ModelMessage{}, ctx.Err()
+			},
+		}
+	}
+}
+
+func TestIngestAlertsFiltersAndDedupes(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	service := New(ctx, audit, nil, blockingRunnerFactory(t))
+	t.Cleanup(func() { cancel(); service.Wait() })
+	alerts := []Alert{
+		{Status: "firing", Fingerprint: "aaa", Labels: map[string]string{"alertname": "HostDown", "instance": "nas"}, Annotations: map[string]string{"summary": "nas is down"}},
+		{Status: "firing", Fingerprint: "aaa"},
+		{Status: "resolved", Fingerprint: "bbb"},
+		{Status: "firing", Fingerprint: ""},
+		{Status: "firing", Fingerprint: "ccc", Labels: map[string]string{"alertname": "DiskFull"}},
+	}
+	created, skipped, err := service.IngestAlerts(ctx, alerts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != 2 || skipped != 3 {
+		t.Fatalf("created=%d skipped=%d", created, skipped)
+	}
+	triggers := make(map[string]string)
+	for _, summary := range service.ListInvestigations() {
+		triggers[summary.Trigger] = summary.Question
+	}
+	if len(triggers) != 2 {
+		t.Fatalf("investigations = %v", triggers)
+	}
+	question := triggers["alert:aaa"]
+	for _, want := range []string{"HostDown", "instance: nas", "summary: nas is down", "Investigate the cause"} {
+		if !strings.Contains(question, want) {
+			t.Fatalf("question %q missing %q", question, want)
+		}
+	}
+	created, skipped, err = service.IngestAlerts(ctx, alerts[:1])
+	if err != nil || created != 0 || skipped != 1 {
+		t.Fatalf("re-ingest while running: created=%d skipped=%d err=%v", created, skipped, err)
+	}
+}
+
+func TestHTTPIngestAlertsAcceptsRealPayloadShape(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	service := New(ctx, audit, nil, blockingRunnerFactory(t))
+	t.Cleanup(func() { cancel(); service.Wait() })
+	handler := NewHTTP(service, "token")
+	payload := `{"version":"4","groupKey":"{}:{alertname=\"HostDown\"}","truncatedAlerts":0,"status":"firing","receiver":"shackleton","externalURL":"http://alertmanager.example","alerts":[{"status":"firing","fingerprint":"deadbeef","startsAt":"2026-08-19T20:00:00Z","endsAt":"0001-01-01T00:00:00Z","generatorURL":"http://prom.example","labels":{"alertname":"HostDown"},"annotations":{"summary":"down"}}]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/alerts", strings.NewReader(payload))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"created":1`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPost, "/v1/alerts", strings.NewReader("{"))
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("malformed payload status = %d", response.Code)
 	}
 }

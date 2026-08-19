@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -138,6 +139,66 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 		_ = investigation.Close()
 	}()
 	return summary, nil
+}
+
+type Alert struct {
+	Status      string            `json:"status"`
+	Fingerprint string            `json:"fingerprint"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
+}
+
+// IngestAlerts creates one investigation per firing alert, skipping alerts
+// whose fingerprint already has a running investigation and alerts that are
+// not firing (resolved alerts are Alertmanager bookkeeping, not new work).
+func (s *Service) IngestAlerts(ctx context.Context, alerts []Alert) (created, skipped int, err error) {
+	running := make(map[string]bool)
+	for _, summary := range s.store.List() {
+		if summary.Status == "running" {
+			running[summary.Trigger] = true
+		}
+	}
+	for _, alert := range alerts {
+		trigger := "alert:" + alert.Fingerprint
+		if alert.Status != "firing" || alert.Fingerprint == "" || running[trigger] {
+			skipped++
+			continue
+		}
+		if _, err := s.CreateInvestigation(ctx, triageQuestion(alert), trigger); err != nil {
+			return created, skipped, err
+		}
+		running[trigger] = true
+		created++
+	}
+	return created, skipped, nil
+}
+
+func triageQuestion(alert Alert) string {
+	var b strings.Builder
+	b.WriteString("Alertmanager alert firing")
+	if name := alert.Labels["alertname"]; name != "" {
+		b.WriteString(": " + name)
+	}
+	b.WriteString(".")
+	for _, section := range []struct {
+		title  string
+		values map[string]string
+	}{{"Labels", alert.Labels}, {"Annotations", alert.Annotations}} {
+		if len(section.values) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(section.values))
+		for key := range section.values {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		b.WriteString("\n" + section.title + ":")
+		for _, key := range keys {
+			b.WriteString("\n  " + key + ": " + section.values[key])
+		}
+	}
+	b.WriteString("\nInvestigate the cause. If a remediation is warranted, propose it through the gated tools; otherwise report findings.")
+	return b.String()
 }
 
 func (s *Service) GetInvestigation(id string) (store.Summary, []store.Event, error) {

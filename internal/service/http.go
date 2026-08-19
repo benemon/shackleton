@@ -19,6 +19,7 @@ func NewHTTP(service *Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/investigations", service.listInvestigations)
 	mux.HandleFunc("GET /v1/investigations/{id}", service.getInvestigation)
 	mux.HandleFunc("GET /v1/investigations/{id}/events", service.followInvestigation)
+	mux.HandleFunc("POST /v1/alerts", service.ingestAlerts)
 	mux.HandleFunc("GET /v1/approvals", service.listApprovals)
 	mux.HandleFunc("GET /v1/approvals/events", service.followApprovals)
 	mux.HandleFunc("POST /v1/approvals/{id}/decision", service.decideApproval)
@@ -116,6 +117,27 @@ func (s *Service) followInvestigation(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// ingestAlerts decodes leniently: the Alertmanager webhook payload is an
+// external contract carrying fields this endpoint has no use for.
+func (s *Service) ingestAlerts(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Alerts []Alert `json:"alerts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	created, skipped, err := s.IngestAlerts(r.Context(), request.Alerts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, struct {
+		Created int `json:"created"`
+		Skipped int `json:"skipped"`
+	}{created, skipped})
 }
 
 func (s *Service) listApprovals(w http.ResponseWriter, _ *http.Request) {

@@ -78,6 +78,28 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+  /v1/alerts:
+    post:
+      operationId: ingestAlerts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AlertmanagerWebhook'
+      responses:
+        '202':
+          description: Alerts accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /v1/approvals:
     get:
       operationId: listPendingApprovals
@@ -370,6 +392,40 @@ components:
           type: boolean
         answer:
           type: string
+    AlertmanagerWebhook:
+      type: object
+      description: Alertmanager webhook payload; fields beyond alerts are accepted and ignored.
+      required: [alerts]
+      properties:
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alert'
+    Alert:
+      type: object
+      description: One Alertmanager alert; fields beyond these are accepted and ignored.
+      properties:
+        status:
+          type: string
+        fingerprint:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+    IngestResult:
+      type: object
+      additionalProperties: false
+      required: [created, skipped]
+      properties:
+        created:
+          type: integer
+        skipped:
+          type: integer
     PendingApproval:
       type: object
       additionalProperties: false
