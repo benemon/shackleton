@@ -1,0 +1,27 @@
+[
+  {
+    "id": "load",
+    "question": "What is the current 5-minute load average on host nas?",
+    "expect_first_tool": "query_prometheus_instant"
+  },
+  {
+    "id": "policy",
+    "question": "What is the live effective policy of the kubernetes remediation MCP server?",
+    "expect_first_tool": "get_remediation_mcp_config"
+  },
+  {
+    "id": "dns",
+    "question": "From inside the cluster, check whether the DNS name thanos-querier.openshift-monitoring.svc resolves.",
+    "expect_first_tool": "run_preapproved_diagnostic_image"
+  },
+  {
+    "id": "procs",
+    "question": "List the processes running inside pod POD_NAME in namespace NAMESPACE.",
+    "expect_first_tool": "run_preapproved_kubectl_exec_command"
+  },
+  {
+    "id": "trend",
+    "question": "How has the 15-minute load average on host nas changed over the last 6 hours?",
+    "expect_first_tool": "query_prometheus_range"
+  }
+]

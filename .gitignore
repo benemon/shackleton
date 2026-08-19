@@ -1,0 +1,20 @@
+# Go
+/shackleton
+/bin/
+*.exe
+*.test
+*.out
+*.prof
+coverage.*
+
+# Env / secrets (never commit)
+*.env
+.env
+*.key
+*.pem
+kubeconfig*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
