@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -10,6 +11,19 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
 )
+
+type recordedEvent struct {
+	typeName string
+	payload  any
+}
+
+type eventRecorder struct {
+	events []recordedEvent
+}
+
+func (r *eventRecorder) Emit(eventType string, payload any) {
+	r.events = append(r.events, recordedEvent{eventType, payload})
+}
 
 func testRegistry(t *testing.T, called *int) *Registry {
 	t.Helper()
@@ -135,6 +149,50 @@ func TestInvestigationTimeoutReturnsOutcomeWithPartialMetrics(t *testing.T) {
 	if metrics.Rounds != 1 || metrics.Completed || metrics.Answer != "wall clock exceeded" {
 		t.Fatalf("timeout metrics = %+v", metrics)
 	}
+}
+
+func TestCLIApprovalDecisionRecordsVia(t *testing.T) {
+	registry := &Registry{tools: make(map[string]toolEntry)}
+	if err := registry.add("repair", "test", map[string]any{"type": "object"}, true,
+		func(context.Context, map[string]any) (string, error) { return "repaired", nil }); err != nil {
+		t.Fatal(err)
+	}
+	recorder := &eventRecorder{}
+	completion := 0
+	runner := Runner{
+		Tools: registry, Approver: NewCLIApprover(false), Events: recorder,
+		Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+			completion++
+			if completion == 1 {
+				return ModelMessage{ToolCalls: []ModelToolCall{{Name: "repair", Arguments: `{}`, ID: "call"}}}, nil
+			}
+			return ModelMessage{Content: "done"}, nil
+		},
+	}
+	if _, err := runner.Run(context.Background(), "question", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range recorder.events {
+		if event.typeName != "approval_decided" {
+			continue
+		}
+		encoded, err := json.Marshal(event.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Approved bool   `json:"approved"`
+			Via      string `json:"via"`
+		}
+		if err := json.Unmarshal(encoded, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Approved || payload.Via != "cli" {
+			t.Fatalf("approval decision = %+v", payload)
+		}
+		return
+	}
+	t.Fatal("approval_decided event not emitted")
 }
 
 func TestFinalRoundNudgeAppearsExactlyOnceAtCap(t *testing.T) {

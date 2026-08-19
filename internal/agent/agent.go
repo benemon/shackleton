@@ -21,8 +21,13 @@ type ToolCall struct {
 	Human    string         `json:"human"`
 }
 
+type Decision struct {
+	Approved bool
+	Via      string
+}
+
 type Approver interface {
-	RequestApproval(ctx context.Context, call ToolCall) (bool, error)
+	RequestApproval(ctx context.Context, call ToolCall) (Decision, error)
 }
 
 type Notifier interface {
@@ -65,7 +70,6 @@ type Runner struct {
 	Complete             CompletionFunc
 	Tools                *Registry
 	Approver             Approver
-	ApprovalVia          string
 	Notifier             Notifier
 	MaxRounds            int
 	MaxMalformedRetries  int
@@ -210,7 +214,7 @@ func (r *Runner) handleCall(ctx context.Context, raw ModelToolCall, timeout time
 			Name   string `json:"name"`
 			Human  string `json:"human"`
 		}{call.ID, call.Name, call.Human})
-		approved, err := r.Approver.RequestApproval(ctx, call)
+		decision, err := r.Approver.RequestApproval(ctx, call)
 		if err != nil {
 			return callResult{"Tool error: approval failed: " + err.Error(), args, false, true}
 		}
@@ -218,8 +222,8 @@ func (r *Runner) handleCall(ctx context.Context, raw ModelToolCall, timeout time
 			CallID   string `json:"call_id"`
 			Approved bool   `json:"approved"`
 			Via      string `json:"via"`
-		}{call.ID, approved, r.ApprovalVia})
-		if !approved {
+		}{call.ID, decision.Approved, decision.Via})
+		if !decision.Approved {
 			metrics.Denied++
 			return callResult{"denied by operator", args, false, false}
 		}
@@ -293,8 +297,8 @@ type CLIApprover struct{ approve bool }
 
 func NewCLIApprover(approve bool) *CLIApprover { return &CLIApprover{approve: approve} }
 
-func (a *CLIApprover) RequestApproval(context.Context, ToolCall) (bool, error) {
-	return a.approve, nil
+func (a *CLIApprover) RequestApproval(context.Context, ToolCall) (Decision, error) {
+	return Decision{Approved: a.approve, Via: "cli"}, nil
 }
 
 func humanRendering(name string, args map[string]any) string {

@@ -20,6 +20,7 @@ func NewHTTP(service *Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/investigations/{id}", service.getInvestigation)
 	mux.HandleFunc("GET /v1/investigations/{id}/events", service.followInvestigation)
 	mux.HandleFunc("GET /v1/approvals", service.listApprovals)
+	mux.HandleFunc("GET /v1/approvals/events", service.followApprovals)
 	mux.HandleFunc("POST /v1/approvals/{id}/decision", service.decideApproval)
 	mux.HandleFunc("GET /v1/config", service.getConfig)
 	mux.HandleFunc("GET /v1/health", service.getHealth)
@@ -121,6 +122,27 @@ func (s *Service) listApprovals(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.ListPendingApprovals())
 }
 
+func (s *Service) followApprovals(w http.ResponseWriter, r *http.Request) {
+	events, cancel := s.SubscribeApprovals()
+	defer cancel()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	controller := http.NewResponseController(w)
+	if err := controller.Flush(); err != nil {
+		return
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event, ok := <-events:
+			if !ok || writeApprovalSSE(w, controller, event) != nil {
+				return
+			}
+		}
+	}
+}
+
 func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Approved *bool `json:"approved"`
@@ -132,7 +154,7 @@ func (s *Service) decideApproval(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.DecideApproval(r.PathValue("id"), *request.Approved); err != nil {
+	if err := s.DecideApproval(r.PathValue("id"), *request.Approved, "api"); err != nil {
 		switch {
 		case errors.Is(err, ErrApprovalNotFound):
 			writeError(w, http.StatusNotFound, err.Error())
@@ -178,6 +200,17 @@ func writeSSE(w http.ResponseWriter, controller *http.ResponseController, index 
 		return err
 	}
 	if _, err := w.Write([]byte("id: " + strconv.Itoa(index) + "\nevent: " + event.Type + "\ndata: " + string(data) + "\n\n")); err != nil {
+		return err
+	}
+	return controller.Flush()
+}
+
+func writeApprovalSSE(w http.ResponseWriter, controller *http.ResponseController, event ApprovalEvent) error {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("event: " + event.Type + "\ndata: " + string(data) + "\n\n")); err != nil {
 		return err
 	}
 	return controller.Flush()

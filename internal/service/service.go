@@ -31,6 +31,13 @@ type PendingApproval struct {
 	RequestedAt     time.Time `json:"requested_at"`
 }
 
+type ApprovalEvent struct {
+	Type     string          `json:"type"`
+	Approval PendingApproval `json:"approval"`
+	Approved bool            `json:"approved"`
+	Via      string          `json:"via"`
+}
+
 type ConfigView struct {
 	Listen     string           `json:"listen"`
 	StateDir   string           `json:"state_dir"`
@@ -77,7 +84,7 @@ type HealthStatus struct {
 
 type pendingApproval struct {
 	PendingApproval
-	decision chan bool
+	decision chan agent.Decision
 }
 
 type Service struct {
@@ -87,15 +94,17 @@ type Service struct {
 	newRunner RunnerFactory
 	wg        sync.WaitGroup
 
-	mu      sync.Mutex
-	pending map[string]*pendingApproval
-	decided map[string]struct{}
+	mu          sync.Mutex
+	pending     map[string]*pendingApproval
+	decided     map[string]struct{}
+	subscribers map[chan ApprovalEvent]struct{}
 }
 
 func New(ctx context.Context, audit *store.Store, cfg *config.Config, newRunner RunnerFactory) *Service {
 	return &Service{
 		ctx: ctx, store: audit, config: cfg, newRunner: newRunner,
 		pending: make(map[string]*pendingApproval), decided: make(map[string]struct{}),
+		subscribers: make(map[chan ApprovalEvent]struct{}),
 	}
 }
 
@@ -160,7 +169,23 @@ func (s *Service) ListPendingApprovals() []PendingApproval {
 	return result
 }
 
-func (s *Service) DecideApproval(id string, approved bool) error {
+func (s *Service) SubscribeApprovals() (<-chan ApprovalEvent, func()) {
+	s.mu.Lock()
+	ch := make(chan ApprovalEvent, 32)
+	s.subscribers[ch] = struct{}{}
+	s.mu.Unlock()
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.subscribers, ch)
+			close(ch)
+			s.mu.Unlock()
+		})
+	}
+}
+
+func (s *Service) DecideApproval(id string, approved bool, via string) error {
 	s.mu.Lock()
 	pending := s.pending[id]
 	if pending == nil {
@@ -173,8 +198,10 @@ func (s *Service) DecideApproval(id string, approved bool) error {
 	}
 	delete(s.pending, id)
 	s.decided[id] = struct{}{}
+	decision := agent.Decision{Approved: approved, Via: via}
+	s.publishApprovalLocked(ApprovalEvent{Type: "settled", Approval: pending.PendingApproval, Approved: approved, Via: via})
 	s.mu.Unlock()
-	pending.decision <- approved
+	pending.decision <- decision
 	return nil
 }
 
@@ -222,17 +249,17 @@ type investigationApprover struct {
 	investigationID string
 }
 
-func (a *investigationApprover) RequestApproval(ctx context.Context, call agent.ToolCall) (bool, error) {
+func (a *investigationApprover) RequestApproval(ctx context.Context, call agent.ToolCall) (agent.Decision, error) {
 	pending, err := a.service.addPending(a.investigationID, call)
 	if err != nil {
-		return false, err
+		return agent.Decision{}, err
 	}
 	select {
-	case approved := <-pending.decision:
-		return approved, nil
+	case decision := <-pending.decision:
+		return decision, nil
 	case <-ctx.Done():
 		if a.service.removePending(pending.ID, pending) {
-			return false, ctx.Err()
+			return agent.Decision{}, ctx.Err()
 		}
 		return <-pending.decision, nil
 	}
@@ -247,11 +274,12 @@ func (s *Service) addPending(investigationID string, call agent.ToolCall) (*pend
 		pending := &pendingApproval{PendingApproval: PendingApproval{
 			ID: id, InvestigationID: investigationID, CallID: call.ID, Name: call.Name,
 			Human: call.Human, RequestedAt: time.Now().UTC(),
-		}, decision: make(chan bool, 1)}
+		}, decision: make(chan agent.Decision, 1)}
 		s.mu.Lock()
 		_, wasDecided := s.decided[id]
 		if s.pending[id] == nil && !wasDecided {
 			s.pending[id] = pending
+			s.publishApprovalLocked(ApprovalEvent{Type: "requested", Approval: pending.PendingApproval})
 			s.mu.Unlock()
 			return pending, nil
 		}
@@ -267,7 +295,25 @@ func (s *Service) removePending(id string, want *pendingApproval) bool {
 		return false
 	}
 	delete(s.pending, id)
+	s.publishApprovalLocked(ApprovalEvent{Type: "settled", Approval: want.PendingApproval, Approved: false, Via: "timeout"})
 	return true
+}
+
+func (s *Service) publishApprovalLocked(event ApprovalEvent) {
+	for ch := range s.subscribers {
+		select {
+		case ch <- event:
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- event:
+			default:
+			}
+		}
+	}
 }
 
 type investigationSink struct {

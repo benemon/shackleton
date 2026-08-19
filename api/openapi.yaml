@@ -92,6 +92,18 @@ paths:
                   $ref: '#/components/schemas/PendingApproval'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/approvals/events:
+    get:
+      operationId: followApprovalEvents
+      responses:
+        '200':
+          description: Server-sent approval lifecycle event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/approvals/{id}/decision:
     parameters:
       - $ref: '#/components/parameters/ApprovalID'
@@ -105,7 +117,7 @@ paths:
               $ref: '#/components/schemas/ApprovalDecision'
       responses:
         '200':
-          description: Approval decided
+          description: Approval decided via the API
           content:
             application/json:
               schema:
@@ -376,6 +388,20 @@ components:
         requested_at:
           type: string
           format: date-time
+    ApprovalEvent:
+      type: object
+      additionalProperties: false
+      required: [type, approval, approved, via]
+      properties:
+        type:
+          type: string
+          enum: [requested, settled]
+        approval:
+          $ref: '#/components/schemas/PendingApproval'
+        approved:
+          type: boolean
+        via:
+          type: string
     SecretRef:
       oneOf:
         - type: object

@@ -18,8 +18,24 @@ import (
 	"github.com/benemon/shackleton/internal/agent"
 	"github.com/benemon/shackleton/internal/config"
 	"github.com/benemon/shackleton/internal/store"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
 )
+
+type approvalSession struct{}
+
+func (approvalSession) ListTools(context.Context, *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
+	return &mcp.ListToolsResult{Tools: []*mcp.Tool{{
+		Name: "repair", Description: "repair", InputSchema: map[string]any{"type": "object"},
+	}}}, nil
+}
+
+func (approvalSession) CallTool(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "repaired"}}}, nil
+}
+
+func (approvalSession) Ping(context.Context, *mcp.PingParams) error { return nil }
+func (approvalSession) Close() error                                { return nil }
 
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
@@ -72,9 +88,33 @@ func completedRunnerFactory(t *testing.T, answer string) RunnerFactory {
 			events.Emit(store.EventToolCall, store.ToolCallPayload{Round: 1, Name: "fake", ResultSnippet: "result"})
 		}
 		return &agent.Runner{
-			Tools: registry, Events: events, Approver: approver, ApprovalVia: "api",
+			Tools: registry, Events: events, Approver: approver,
 			Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
 				return agent.ModelMessage{Content: answer}, nil
+			},
+		}
+	}
+}
+
+func approvalRunnerFactory(t *testing.T) RunnerFactory {
+	t.Helper()
+	registry, err := agent.NewRegistry(context.Background(), []agent.MCPServer{{
+		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return approvalSession{}, nil },
+	}}, map[string]bool{"repair": true}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		completion := 0
+		return &agent.Runner{
+			Tools: registry, Events: events, Approver: approver,
+			Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+				completion++
+				if completion == 1 {
+					return agent.ModelMessage{ToolCalls: []agent.ModelToolCall{{Name: "repair", Arguments: `{}`, ID: "call"}}}, nil
+				}
+				return agent.ModelMessage{Content: "done"}, nil
 			},
 		}
 	}
@@ -116,17 +156,17 @@ func TestApprovalDecisionsAreRoutedExactlyOnce(t *testing.T) {
 	service := New(context.Background(), nil, nil, nil)
 	type result struct {
 		investigationID string
-		approved        bool
+		decision        agent.Decision
 		err             error
 	}
 	results := make(chan result, 2)
 	for _, investigationID := range []string{"first", "second"} {
 		investigationID := investigationID
 		go func() {
-			approved, err := (&investigationApprover{service: service, investigationID: investigationID}).RequestApproval(
+			decision, err := (&investigationApprover{service: service, investigationID: investigationID}).RequestApproval(
 				context.Background(), agent.ToolCall{ID: "shared-model-call-id", Name: "repair", Human: investigationID},
 			)
-			results <- result{investigationID, approved, err}
+			results <- result{investigationID, decision, err}
 		}()
 	}
 	var pending []PendingApproval
@@ -145,10 +185,10 @@ func TestApprovalDecisionsAreRoutedExactlyOnce(t *testing.T) {
 		}
 		ids[approval.InvestigationID] = approval.ID
 	}
-	if err := service.DecideApproval(ids["first"], false); err != nil {
+	if err := service.DecideApproval(ids["first"], false, "api"); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.DecideApproval(ids["second"], true); err != nil {
+	if err := service.DecideApproval(ids["second"], true, "telegram"); err != nil {
 		t.Fatal(err)
 	}
 	verdicts := make(map[string]bool)
@@ -157,12 +197,19 @@ func TestApprovalDecisionsAreRoutedExactlyOnce(t *testing.T) {
 		if result.err != nil {
 			t.Fatal(result.err)
 		}
-		verdicts[result.investigationID] = result.approved
+		verdicts[result.investigationID] = result.decision.Approved
+		wantVia := "api"
+		if result.investigationID == "second" {
+			wantVia = "telegram"
+		}
+		if result.decision.Via != wantVia {
+			t.Fatalf("%s decision via = %q, want %q", result.investigationID, result.decision.Via, wantVia)
+		}
 	}
 	if verdicts["first"] || !verdicts["second"] {
 		t.Fatalf("verdicts = %+v", verdicts)
 	}
-	if err := service.DecideApproval(ids["first"], true); !errors.Is(err, ErrApprovalAlreadyDecided) {
+	if err := service.DecideApproval(ids["first"], true, "api"); !errors.Is(err, ErrApprovalAlreadyDecided) {
 		t.Fatalf("second decision error = %v", err)
 	}
 
@@ -196,6 +243,7 @@ func TestEveryRouteRequiresBearerToken(t *testing.T) {
 		{http.MethodGet, "/v1/investigations/missing", ""},
 		{http.MethodGet, "/v1/investigations/missing/events", ""},
 		{http.MethodGet, "/v1/approvals", ""},
+		{http.MethodGet, "/v1/approvals/events", ""},
 		{http.MethodPost, "/v1/approvals/missing/decision", `{"approved":true}`},
 		{http.MethodGet, "/v1/config", ""},
 		{http.MethodGet, "/v1/health", ""},
@@ -213,6 +261,60 @@ func TestEveryRouteRequiresBearerToken(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestHTTPApprovalDecisionRecordsAPIVia(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(context.Background(), audit, testConfig(t), approvalRunnerFactory(t))
+	summary, err := service.CreateInvestigation(context.Background(), "repair", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending []PendingApproval
+	deadline := time.Now().Add(time.Second)
+	for len(pending) != 1 && time.Now().Before(deadline) {
+		pending = service.ListPendingApprovals()
+		time.Sleep(time.Millisecond)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending approvals = %+v", pending)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/approvals/"+pending[0].ID+"/decision", strings.NewReader(`{"approved":true,"via":"telegram"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	NewHTTP(service, "token").ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || len(service.ListPendingApprovals()) != 1 {
+		t.Fatalf("client-supplied via status = %d, body = %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPost, "/v1/approvals/"+pending[0].ID+"/decision", strings.NewReader(`{"approved":true}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
+	NewHTTP(service, "token").ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("decision status = %d, body = %s", response.Code, response.Body.String())
+	}
+	service.Wait()
+	_, events, err := service.GetInvestigation(summary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type != store.EventApprovalDecided {
+			continue
+		}
+		var payload store.ApprovalDecidedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !payload.Approved || payload.Via != "api" {
+			t.Fatalf("approval decision = %+v", payload)
+		}
+		return
+	}
+	t.Fatal("approval_decided event not recorded")
 }
 
 func TestConfigHTTPResponseContainsRefsAndNoSecretValues(t *testing.T) {
@@ -318,6 +420,72 @@ func TestSSEFlushesLiveEventBeforeTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForSSE(t, events, scanErrors, store.EventCompleted)
+}
+
+func TestApprovalSSEFlushesRequestedAndSettled(t *testing.T) {
+	service := New(context.Background(), nil, nil, nil)
+	server := httptest.NewServer(NewHTTP(service, "token"))
+	defer server.Close()
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/v1/approvals/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer token")
+	client := server.Client()
+	client.Timeout = 2 * time.Second
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	events := make(chan string)
+	scanErrors := make(chan error, 1)
+	go scanSSE(response.Body, events, scanErrors)
+	result := make(chan agent.Decision, 1)
+	go func() {
+		decision, _ := (&investigationApprover{service: service, investigationID: "investigation"}).RequestApproval(
+			context.Background(), agent.ToolCall{ID: "call", Name: "repair", Human: "repair"},
+		)
+		result <- decision
+	}()
+	waitForSSE(t, events, scanErrors, "requested")
+	pending := service.ListPendingApprovals()
+	if len(pending) != 1 {
+		t.Fatalf("pending approvals = %+v", pending)
+	}
+	if err := service.DecideApproval(pending[0].ID, false, "api"); err != nil {
+		t.Fatal(err)
+	}
+	waitForSSE(t, events, scanErrors, "settled")
+	if decision := <-result; decision.Approved || decision.Via != "api" {
+		t.Fatalf("decision = %+v", decision)
+	}
+}
+
+func TestApprovalCancellationPublishesTimeoutSettlement(t *testing.T) {
+	service := New(context.Background(), nil, nil, nil)
+	events, unsubscribe := service.SubscribeApprovals()
+	defer unsubscribe()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := (&investigationApprover{service: service, investigationID: "investigation"}).RequestApproval(
+			ctx, agent.ToolCall{ID: "call", Name: "repair", Human: "repair"},
+		)
+		result <- err
+	}()
+	requested := <-events
+	if requested.Type != "requested" {
+		t.Fatalf("first approval event = %+v", requested)
+	}
+	cancel()
+	settled := <-events
+	if settled.Type != "settled" || settled.Approved || settled.Via != "timeout" || settled.Approval.ID != requested.Approval.ID {
+		t.Fatalf("settled approval event = %+v", settled)
+	}
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("approval error = %v", err)
+	}
 }
 
 func scanSSE(reader io.Reader, events chan<- string, scanErrors chan<- error) {

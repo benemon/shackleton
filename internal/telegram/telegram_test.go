@@ -8,31 +8,95 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/benemon/shackleton/internal/agent"
+	"github.com/benemon/shackleton/internal/service"
+	"github.com/benemon/shackleton/internal/store"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/openai/openai-go/v3"
 )
 
+type telegramCall struct {
+	method    string
+	payload   map[string]any
+	messageID int64
+}
+
 type telegramRecorder struct {
-	mu      sync.Mutex
-	methods []string
-	texts   []string
+	mu            sync.Mutex
+	calls         []telegramCall
+	nextMessageID int64
+	updates       []update
+}
+
+func testBot(t *testing.T) (*bot, *telegramRecorder) {
+	t.Helper()
+	recorder := &telegramRecorder{nextMessageID: 41}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		recorder.mu.Lock()
+		if strings.HasSuffix(r.URL.Path, "/getUpdates") {
+			updates := recorder.updates
+			recorder.updates = nil
+			recorder.calls = append(recorder.calls, telegramCall{method: r.URL.Path, payload: payload})
+			recorder.mu.Unlock()
+			if len(updates) == 0 {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": updates})
+			return
+		}
+		messageID := int64(0)
+		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			recorder.nextMessageID++
+			messageID = recorder.nextMessageID
+		}
+		recorder.calls = append(recorder.calls, telegramCall{r.URL.Path, payload, messageID})
+		recorder.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"message_id": messageID}})
+	}))
+	t.Cleanup(server.Close)
+	return &bot{chatID: 7, client: server.Client(), baseURL: server.URL}, recorder
 }
 
 func testAdapter(t *testing.T) (*Adapter, *telegramRecorder) {
 	t.Helper()
-	recorder := &telegramRecorder{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Text string `json:"text"`
+	client, recorder := testBot(t)
+	return &Adapter{bot: client, pending: make(map[string]*pendingApproval)}, recorder
+}
+
+func (r *telegramRecorder) matching(method string) []telegramCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var result []telegramCall
+	for _, call := range r.calls {
+		if strings.HasSuffix(call.method, "/"+method) {
+			result = append(result, call)
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		recorder.mu.Lock()
-		recorder.methods = append(recorder.methods, r.URL.Path)
-		recorder.texts = append(recorder.texts, body.Text)
-		recorder.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":42}}`))
-	}))
-	t.Cleanup(server.Close)
-	return &Adapter{chatID: 7, client: server.Client(), baseURL: server.URL, pending: make(map[string]*pendingApproval)}, recorder
+	}
+	return result
+}
+
+func waitForTelegramCalls(t *testing.T, recorder *telegramRecorder, method string, count int) []telegramCall {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		calls := recorder.matching(method)
+		if len(calls) >= count {
+			return calls
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d %s calls", count, method)
+	return nil
 }
 
 func callback(id, data string, chatID, fromID, messageID int64) callbackQuery {
@@ -62,16 +126,8 @@ func TestReplayedTapSettlesExactlyOnce(t *testing.T) {
 		t.Fatal("first tap did not approve")
 	}
 	assertNoDecision(t, p.decision)
-	recorder.mu.Lock()
-	defer recorder.mu.Unlock()
-	answers := 0
-	for _, method := range recorder.methods {
-		if strings.HasSuffix(method, "/answerCallbackQuery") {
-			answers++
-		}
-	}
-	if answers != 1 {
-		t.Fatalf("replay was answered %d times, want 1", answers)
+	if answers := recorder.matching("answerCallbackQuery"); len(answers) != 1 {
+		t.Fatalf("replay was answered %d times, want 1", len(answers))
 	}
 }
 
@@ -106,9 +162,214 @@ func TestSendTruncatesTo3800Characters(t *testing.T) {
 	if err := a.Send(context.Background(), strings.Repeat("界", 3801)); err != nil {
 		t.Fatal(err)
 	}
-	recorder.mu.Lock()
-	defer recorder.mu.Unlock()
-	if got := []rune(recorder.texts[0]); len(got) != 3800 {
+	calls := recorder.matching("sendMessage")
+	if got := []rune(calls[0].payload["text"].(string)); len(got) != 3800 {
 		t.Fatalf("sent %d characters, want 3800", len(got))
+	}
+}
+
+type triggerApprovalSession struct{}
+
+func (triggerApprovalSession) ListTools(context.Context, *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
+	return &mcp.ListToolsResult{Tools: []*mcp.Tool{{
+		Name: "repair", Description: "repair", InputSchema: map[string]any{"type": "object"},
+	}}}, nil
+}
+
+func (triggerApprovalSession) CallTool(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "repaired"}}}, nil
+}
+
+func (triggerApprovalSession) Ping(context.Context, *mcp.PingParams) error { return nil }
+func (triggerApprovalSession) Close() error                                { return nil }
+
+func completedFactory(t *testing.T, answer string) service.RunnerFactory {
+	t.Helper()
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		return &agent.Runner{
+			Tools: registry, Events: events, Approver: approver,
+			Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+				return agent.ModelMessage{Content: answer}, nil
+			},
+		}
+	}
+}
+
+func triggerApprovalFactory(t *testing.T) service.RunnerFactory {
+	t.Helper()
+	registry, err := agent.NewRegistry(context.Background(), []agent.MCPServer{{
+		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return triggerApprovalSession{}, nil },
+	}}, map[string]bool{"repair": true}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		completion := 0
+		return &agent.Runner{
+			Tools: registry, Events: events, Approver: approver,
+			Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+				completion++
+				if completion == 1 {
+					return agent.ModelMessage{ToolCalls: []agent.ModelToolCall{{Name: "repair", Arguments: `{}`, ID: "call"}}}, nil
+				}
+				return agent.ModelMessage{Content: "done"}, nil
+			},
+		}
+	}
+}
+
+func testTrigger(t *testing.T, svc *service.Service) (*Trigger, *telegramRecorder, context.Context) {
+	t.Helper()
+	client, recorder := testBot(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	trigger := &Trigger{bot: client, service: svc, messages: make(map[string]int64)}
+	events, unsubscribe := svc.SubscribeApprovals()
+	go func() {
+		defer unsubscribe()
+		trigger.followApprovals(ctx, events)
+	}()
+	return trigger, recorder, ctx
+}
+
+func waitForPending(t *testing.T, svc *service.Service) service.PendingApproval {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		pending := svc.ListPendingApprovals()
+		if len(pending) == 1 {
+			return pending[0]
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for pending approval")
+	return service.PendingApproval{}
+}
+
+func TestTriggerQuestionAuthorizationAndHappyPath(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc := service.New(ctx, audit, nil, completedFactory(t, "answer"))
+	client, recorder := testBot(t)
+	recorder.mu.Lock()
+	recorder.updates = []update{
+		{UpdateID: 1, Message: &message{Text: "wrong chat", Chat: chat{ID: 8}, From: user{ID: 7}}},
+		{UpdateID: 2, Message: &message{Text: "wrong user", Chat: chat{ID: 7}, From: user{ID: 8}}},
+		{UpdateID: 3, Message: &message{Text: "/command", Chat: chat{ID: 7}, From: user{ID: 7}}},
+		{UpdateID: 4, Message: &message{Text: "question", Chat: chat{ID: 7}, From: user{ID: 7}}},
+	}
+	recorder.mu.Unlock()
+	newTrigger(ctx, client, svc)
+	deadline := time.Now().Add(time.Second)
+	for len(svc.ListInvestigations()) != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	calls := waitForTelegramCalls(t, recorder, "sendMessage", 2)
+	svc.Wait()
+	if investigations := svc.ListInvestigations(); len(investigations) != 1 || investigations[0].Question != "question" || investigations[0].Trigger != "telegram" {
+		t.Fatalf("investigations = %+v", investigations)
+	}
+	if calls[0].payload["text"] != "Investigating…" || calls[1].payload["text"] != "answer" {
+		t.Fatalf("sent texts = %q, %q", calls[0].payload["text"], calls[1].payload["text"])
+	}
+	for _, call := range calls {
+		if call.payload["chat_id"] != float64(7) {
+			t.Fatalf("sendMessage chat_id = %v", call.payload["chat_id"])
+		}
+	}
+	polls := recorder.matching("getUpdates")
+	allowed, ok := polls[0].payload["allowed_updates"].([]any)
+	if !ok || len(allowed) != 2 || allowed[0] != "message" || allowed[1] != "callback_query" {
+		t.Fatalf("allowed_updates = %#v", polls[0].payload["allowed_updates"])
+	}
+}
+
+func TestTriggerCallbackAuthorizationStalenessDenialAndVia(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(context.Background(), audit, nil, triggerApprovalFactory(t))
+	trigger, recorder, ctx := testTrigger(t, svc)
+	summary, err := svc.CreateInvestigation(ctx, "repair", "telegram")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := waitForPending(t, svc)
+	approvalMessages := waitForTelegramCalls(t, recorder, "sendMessage", 1)
+	messageID := approvalMessages[0].messageID
+	encoded, _ := json.Marshal(approvalMessages[0].payload["reply_markup"])
+	if !strings.Contains(string(encoded), `"callback_data":"d:`+pending.ID+`"`) {
+		t.Fatalf("approval keyboard = %s", encoded)
+	}
+	trigger.handleCallback(ctx, callback("wrong-chat", "d:"+pending.ID, 8, 7, messageID))
+	trigger.handleCallback(ctx, callback("wrong-user", "d:"+pending.ID, 7, 8, messageID))
+	for _, answer := range waitForTelegramCalls(t, recorder, "answerCallbackQuery", 2)[:2] {
+		if answer.payload["text"] != "Unauthorized" {
+			t.Fatalf("unauthorized callback answer = %v", answer.payload["text"])
+		}
+	}
+	if len(svc.ListPendingApprovals()) != 1 {
+		t.Fatal("unauthorized callback settled approval")
+	}
+	trigger.handleCallback(ctx, callback("stale", "d:"+pending.ID, 7, 7, messageID+1))
+	if len(svc.ListPendingApprovals()) != 1 {
+		t.Fatal("stale callback settled approval")
+	}
+	trigger.handleCallback(ctx, callback("deny", "d:"+pending.ID, 7, 7, messageID))
+	svc.Wait()
+	edits := waitForTelegramCalls(t, recorder, "editMessageText", 1)
+	if edits[0].payload["message_id"] != float64(messageID) || edits[0].payload["text"] != "Denied via telegram:\n\nrepair {}" {
+		t.Fatalf("settled edit = %+v", edits[0].payload)
+	}
+	_, events, err := svc.GetInvestigation(summary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type != store.EventApprovalDecided {
+			continue
+		}
+		var payload store.ApprovalDecidedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Approved || payload.Via != "telegram" {
+			t.Fatalf("approval decision = %+v", payload)
+		}
+		return
+	}
+	t.Fatal("approval_decided event not recorded")
+}
+
+func TestTriggerEditsApprovalSettledViaAPI(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(context.Background(), audit, nil, triggerApprovalFactory(t))
+	_, recorder, ctx := testTrigger(t, svc)
+	if _, err := svc.CreateInvestigation(ctx, "repair", "telegram"); err != nil {
+		t.Fatal(err)
+	}
+	pending := waitForPending(t, svc)
+	approvalMessages := waitForTelegramCalls(t, recorder, "sendMessage", 1)
+	if err := svc.DecideApproval(pending.ID, true, "api"); err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	edits := waitForTelegramCalls(t, recorder, "editMessageText", 1)
+	if edits[0].payload["message_id"] != float64(approvalMessages[0].messageID) || edits[0].payload["text"] != "Approved via api:\n\nrepair {}" {
+		t.Fatalf("settled edit = %+v", edits[0].payload)
 	}
 }

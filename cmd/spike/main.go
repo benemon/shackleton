@@ -316,6 +316,16 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	core := service.New(investigationCtx, audit, cfg, factory)
+	telegramToken, telegramChatID := os.Getenv("TG_BOT_TOKEN"), os.Getenv("TG_CHAT_ID")
+	if telegramToken != "" && telegramChatID != "" {
+		if _, err := telegram.NewTrigger(investigationCtx, telegramToken, telegramChatID, core); err != nil {
+			cancelInvestigations()
+			closeSessions()
+			return err
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "telegram trigger disabled: TG_BOT_TOKEN and TG_CHAT_ID are required")
+	}
 	server := &http.Server{Addr: cfg.Listen, Handler: service.NewHTTP(core, cfg.APIToken.Value())}
 	serverErrors := make(chan error, 1)
 	go func() { serverErrors <- server.ListenAndServe() }()
@@ -537,7 +547,6 @@ func newRunner(ctx context.Context, approverName string, cfg *config.Config) (*a
 		return nil, func() {}, err
 	}
 	runner := factory(nil, nil)
-	runner.ApprovalVia = approverName
 	switch approverName {
 	case "cli-deny":
 		runner.Approver = agent.NewCLIApprover(false)
@@ -587,7 +596,7 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFa
 	complete := agent.StreamCompleter(openAIClient, cfg.Model.Name)
 	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
 		return &agent.Runner{
-			Complete: complete, Tools: registry, Approver: approver, ApprovalVia: "api", Events: events,
+			Complete: complete, Tools: registry, Approver: approver, Events: events,
 			MaxRounds: cfg.Agent.MaxRounds, CallTimeout: cfg.Agent.CallTimeout.Duration(),
 			InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration(),
 		}
