@@ -34,5 +34,7 @@ it is a cluster, that leaves a gap. Shackleton fills it, lab-benefit-first.
 
 ## Status
 
-Spike phase — proving local-model tool-call reliability on a heterogeneous tool
-surface and the approval seam before building out.
+In service against its first estate. The core loop — scheduled sweeps,
+reactive Q&A, approval-gated remediation, audit trail, API + embedded console —
+is running; the pluggable-capability surfaces (tool providers, metrics
+sources, notification channels) are still settling.

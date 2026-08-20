@@ -51,7 +51,7 @@ type reconnectingSession struct {
 	session MCPSession
 }
 
-func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string]bool, thanosClient *http.Client, thanosURL string) (*Registry, error) {
+func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string]bool, promClient *http.Client, promURL string) (*Registry, error) {
 	r := &Registry{tools: make(map[string]toolEntry)}
 	for _, server := range servers {
 		session, err := server.Connect(ctx)
@@ -67,7 +67,6 @@ func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string
 			return nil, fmt.Errorf("%s: list MCP tools: %w", server.Name, err)
 		}
 		for _, tool := range listed.Tools {
-			tool := tool
 			// A gated call is never re-executed: after an ambiguous transport
 			// death the original may already have run, and mutations must not
 			// run twice. The session still reconnects for subsequent calls.
@@ -86,8 +85,8 @@ func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string
 		}
 		r.sessions = append(r.sessions, reconnecting)
 	}
-	if thanosClient != nil {
-		if err := r.addNativeThanos(thanosClient, strings.TrimRight(thanosURL, "/")); err != nil {
+	if promClient != nil {
+		if err := r.addNativePrometheus(promClient, strings.TrimRight(promURL, "/")); err != nil {
 			r.Close()
 			return nil, err
 		}
@@ -185,13 +184,13 @@ func (r *Registry) add(name, description string, inputSchema any, gated bool, ca
 	return nil
 }
 
-func (r *Registry) addNativeThanos(client *http.Client, baseURL string) error {
+func (r *Registry) addNativePrometheus(client *http.Client, baseURL string) error {
 	instant := map[string]any{
 		"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}},
 		"required": []string{"query"}, "additionalProperties": false,
 	}
-	if err := r.add("query_prometheus_instant", "Run an instant PromQL query against lab metrics.", instant, false, func(ctx context.Context, args map[string]any) (string, error) {
-		return queryThanos(ctx, client, baseURL+"/api/v1/query", args)
+	if err := r.add("query_prometheus_instant", "Run an instant PromQL query.", instant, false, func(ctx context.Context, args map[string]any) (string, error) {
+		return queryPrometheus(ctx, client, baseURL+"/api/v1/query", args)
 	}); err != nil {
 		return err
 	}
@@ -203,12 +202,12 @@ func (r *Registry) addNativeThanos(client *http.Client, baseURL string) error {
 		},
 		"required": []string{"query", "start", "end", "step"}, "additionalProperties": false,
 	}
-	return r.add("query_prometheus_range", "Run a range PromQL query against lab metrics. start and end must be RFC3339 timestamps or unix seconds; relative expressions like now-6h are NOT accepted. step is a duration such as 5m.", rangeSchema, false, func(ctx context.Context, args map[string]any) (string, error) {
-		return queryThanos(ctx, client, baseURL+"/api/v1/query_range", args)
+	return r.add("query_prometheus_range", "Run a range PromQL query. start and end must be RFC3339 timestamps or unix seconds; relative expressions like now-6h are NOT accepted. step is a duration such as 5m.", rangeSchema, false, func(ctx context.Context, args map[string]any) (string, error) {
+		return queryPrometheus(ctx, client, baseURL+"/api/v1/query_range", args)
 	})
 }
 
-func queryThanos(ctx context.Context, client *http.Client, endpoint string, args map[string]any) (string, error) {
+func queryPrometheus(ctx context.Context, client *http.Client, endpoint string, args map[string]any) (string, error) {
 	values := url.Values{}
 	for key, value := range args {
 		values.Set(key, fmt.Sprint(value))
@@ -227,7 +226,7 @@ func queryThanos(ctx context.Context, client *http.Client, endpoint string, args
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Thanos: %s: %s", resp.Status, body)
+		return "", fmt.Errorf("prometheus: %s: %s", resp.Status, body)
 	}
 	return string(body), nil
 }

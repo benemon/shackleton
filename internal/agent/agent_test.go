@@ -44,6 +44,23 @@ func testRegistry(t *testing.T, called *int) *Registry {
 	return r
 }
 
+func TestSystemPrompt(t *testing.T) {
+	got := SystemPrompt("You investigate the ACME estate.", []string{"run_host_command", "run_kubectl_command"})
+	if !strings.HasPrefix(got, "You investigate the ACME estate. ") {
+		t.Errorf("preamble missing: %q", got)
+	}
+	if !strings.Contains(got, "The gated tools run_host_command and run_kubectl_command are for APPLYING an approved change") {
+		t.Errorf("gated tool sentence missing: %q", got)
+	}
+	got = SystemPrompt("", nil)
+	if !strings.HasPrefix(got, "You are an infrastructure investigation agent. ") {
+		t.Errorf("default preamble missing: %q", got)
+	}
+	if strings.Contains(got, "gated tools") {
+		t.Errorf("gated tool sentence present with no gated tools: %q", got)
+	}
+}
+
 func TestSchemaValidationAndMalformedRecovery(t *testing.T) {
 	called := 0
 	messages := []ModelMessage{

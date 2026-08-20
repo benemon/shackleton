@@ -1,7 +1,7 @@
 [
   {
     "id": "load",
-    "question": "What is the current 5-minute load average on host nas?",
+    "question": "What is the current 5-minute load average on host HOST_NAME?",
     "expect_first_tool": "query_prometheus_instant"
   },
   {
@@ -11,7 +11,7 @@
   },
   {
     "id": "dns",
-    "question": "From inside the cluster, check whether the DNS name thanos-querier.openshift-monitoring.svc resolves.",
+    "question": "From inside the cluster, check whether the DNS name SERVICE_DNS_NAME resolves.",
     "expect_first_tool": "run_preapproved_diagnostic_image"
   },
   {
@@ -21,7 +21,7 @@
   },
   {
     "id": "trend",
-    "question": "How has the 15-minute load average on host nas changed over the last 6 hours?",
+    "question": "How has the 15-minute load average on host HOST_NAME changed over the last 6 hours?",
     "expect_first_tool": "query_prometheus_range"
   }
 ]

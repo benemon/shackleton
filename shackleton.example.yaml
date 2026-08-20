@@ -11,7 +11,7 @@ api_token: {env: SHACKLETON_API_TOKEN}
 # Directory containing investigation audit state.
 state_dir: /var/lib/shackleton
 # Dotenv files loaded before secret references are resolved.
-env_files: [/opt/holmes/env]
+env_files: [/etc/shackleton/env]
 model:
   # OpenAI-compatible model API base URL.
   base_url: https://model.example.invalid/v1
@@ -44,6 +44,15 @@ sweeps:
     # Question posed to the model; a structured-verdict instruction is appended.
     question: Check node filesystem pressure and report any host above 80% used.
 agent:
+  # Operator-authored preamble describing the estate the agent investigates:
+  # its role, the topology, where measurements live. Appended to it are the
+  # fixed behavioral rules (metrics tool usage, gated-tool discipline, denial
+  # reporting), with gated tool names taken from gated_tools above.
+  prompt: >-
+    You are an infrastructure investigation agent for a small estate. The
+    estate is three bare-metal hosts named alpha, beta, and gamma running
+    services via systemd. Every numeric host measurement lives in Prometheus
+    via node-exporter and is keyed by the instance label.
   # Maximum model completion rounds per investigation.
   max_rounds: 8
   # Timeout applied to each individual tool call.

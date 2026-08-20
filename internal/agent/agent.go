@@ -11,7 +11,23 @@ import (
 	"github.com/openai/openai-go/v3"
 )
 
-const SystemPrompt = `You are an infrastructure investigation agent for a small lab. The lab topology is an OpenShift cluster, which contains containerized workloads only, plus three bare-metal hosts named nas, oddjob, and mini. Those hosts run services via systemd that never appear in the cluster. Every numeric host or cluster measurement, including load, CPU, temperature, disk, and measurements over time, lives in Prometheus via node-exporter and is keyed by the instance label. query_prometheus_instant and query_prometheus_range are the ONLY way to read metrics. The gated tools run_host_command and run_kubectl_command are for APPLYING an approved change, never for lookups; prefer auto-approved read tools. Do not repeat a lookup you already ran. If the operator denies a proposed action, report the denial as an operator decision and do not invent a reason for it. After a few tool calls, stop and give your best concise answer.`
+// SystemPrompt assembles the system prompt from the operator-authored
+// preamble (role + topology, from agent.prompt in the config) and the fixed
+// behavioral contract. The denial sentence is a hard requirement: the model
+// must report an operator deny as a decision, not invent a rationale for it.
+func SystemPrompt(preamble string, gatedTools []string) string {
+	var b strings.Builder
+	if preamble == "" {
+		preamble = "You are an infrastructure investigation agent."
+	}
+	b.WriteString(preamble)
+	b.WriteString(" query_prometheus_instant and query_prometheus_range are the ONLY way to read metrics.")
+	if len(gatedTools) > 0 {
+		b.WriteString(" The gated tools " + strings.Join(gatedTools, " and ") + " are for APPLYING an approved change, never for lookups; prefer auto-approved read tools.")
+	}
+	b.WriteString(" Do not repeat a lookup you already ran. If the operator denies a proposed action, report the denial as an operator decision and do not invent a reason for it. After a few tool calls, stop and give your best concise answer.")
+	return b.String()
+}
 
 type ToolCall struct {
 	Name     string         `json:"name"`
@@ -71,6 +87,7 @@ type Runner struct {
 	Tools                *Registry
 	Approver             Approver
 	Notifier             Notifier
+	Prompt               string
 	MaxRounds            int
 	MaxMalformedRetries  int
 	CallTimeout          time.Duration
@@ -110,8 +127,12 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 	if callTimeout == 0 {
 		callTimeout = 30 * time.Second
 	}
+	prompt := r.Prompt
+	if prompt == "" {
+		prompt = SystemPrompt("", nil)
+	}
 	messages := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage(SystemPrompt + " The current time is " + time.Now().UTC().Format(time.RFC3339) + "."),
+		openai.SystemMessage(prompt + " The current time is " + time.Now().UTC().Format(time.RFC3339) + "."),
 		openai.UserMessage(question),
 	}
 	malformed := make(map[string]int)

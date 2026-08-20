@@ -24,7 +24,6 @@ type verdict struct {
 func Run(ctx context.Context, sweeps []config.Sweep, svc *service.Service, notifier agent.Notifier) {
 	engine := cron.New()
 	for _, sw := range sweeps {
-		sw := sw
 		engine.Schedule(sw.Parsed(), cron.FuncJob(func() { runSweep(ctx, svc, notifier, sw) }))
 	}
 	engine.Start()
@@ -101,13 +100,12 @@ func parseVerdict(answer string) verdict {
 	if start < 0 {
 		return unparseable
 	}
-	body := answer[start+len("```json"):]
-	end := strings.Index(body, "```")
-	if end < 0 {
+	body, _, ok := strings.Cut(answer[start+len("```json"):], "```")
+	if !ok {
 		return unparseable
 	}
 	var parsed verdict
-	if err := json.Unmarshal([]byte(strings.TrimSpace(body[:end])), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &parsed); err != nil {
 		return unparseable
 	}
 	switch parsed.Verdict {

@@ -101,6 +101,7 @@ type TLS struct {
 }
 
 type Agent struct {
+	Prompt               string   `yaml:"prompt,omitempty"`
 	MaxRounds            int      `yaml:"max_rounds"`
 	CallTimeout          Duration `yaml:"call_timeout"`
 	InvestigationTimeout Duration `yaml:"investigation_timeout"`

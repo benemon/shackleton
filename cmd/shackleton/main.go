@@ -1,7 +1,6 @@
 // Command shackleton is a self-hosted AI ops investigation daemon; the
-// llm/mcp/thanos probes and agent/bench subcommands are its development
-// harness. Deployments run it on the host that can reach the MCP servers;
-// credentials never leave that host.
+// agent/bench subcommands are its development harness. Deployments run it on
+// the host that can reach the MCP servers; credentials never leave that host.
 package main
 
 import (
@@ -10,7 +9,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,63 +26,37 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
-	"github.com/openai/openai-go/v3/shared"
 )
-
-const defaultBase = "https://litellm.apps.ocp.lab.orbital.home/v1"
 
 // version is stamped by the Makefile via -ldflags "-X main.version=...".
 var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: shackleton <llm|mcp|thanos|agent|bench|serve|version>")
+		fmt.Fprintln(os.Stderr, "usage: shackleton <agent|bench|serve|version>")
 		os.Exit(2)
 	}
-	if f := os.Getenv("SHACKLETON_ENV_FILE"); f != "" {
-		if err := config.LoadEnvFile(f); err != nil {
-			fmt.Fprintf(os.Stderr, "FAIL: env file: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
 	var err error
-	probe := true
 	switch os.Args[1] {
-	case "llm":
-		err = probeLLM(ctx)
-	case "mcp":
-		err = probeMCP(ctx)
-	case "thanos":
-		err = probeThanos(ctx)
 	case "agent":
-		probe = false
 		err = runAgent(context.Background(), os.Args[2:])
 	case "bench":
-		probe = false
 		err = runBench(context.Background(), os.Args[2:])
 	case "serve":
-		probe = false
 		err = runServe(context.Background(), os.Args[2:])
 	case "version":
-		probe = false
 		fmt.Println(version)
 	default:
-		err = fmt.Errorf("unknown probe %q", os.Args[1])
+		err = fmt.Errorf("unknown subcommand %q", os.Args[1])
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
 		os.Exit(1)
 	}
-	if probe {
-		fmt.Println("PASS")
-	}
 }
 
 // headerRoundTripper injects a static header set into every request — the
-// mechanism Shackleton will use for auth against gated MCP servers.
+// auth mechanism for gated MCP servers and the metrics endpoint.
 type headerRoundTripper struct {
 	base    http.RoundTripper
 	headers map[string]string
@@ -95,149 +67,6 @@ func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		req.Header.Set(k, v)
 	}
 	return h.base.RoundTrip(req)
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func probeLLM(ctx context.Context) error {
-	client := openai.NewClient(
-		option.WithBaseURL(envOr("OPENAI_API_BASE", defaultBase)),
-		option.WithAPIKey(os.Getenv("OPENAI_API_KEY")),
-	)
-
-	tools := []openai.ChatCompletionToolUnionParam{
-		openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-			Name:        "query_prometheus",
-			Description: openai.String("Run a PromQL query against the lab's Prometheus and return the result."),
-			Parameters: shared.FunctionParameters{
-				"type": "object",
-				"properties": map[string]any{
-					"query": map[string]any{"type": "string", "description": "PromQL expression"},
-				},
-				"required": []string{"query"},
-			},
-		}),
-		openai.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
-			Name:        "run_host_command",
-			Description: openai.String("Run a read-only diagnostic command on a lab host over SSH."),
-			Parameters: shared.FunctionParameters{
-				"type": "object",
-				"properties": map[string]any{
-					"host":    map[string]any{"type": "string", "enum": []string{"nas", "oddjob", "mini"}},
-					"command": map[string]any{"type": "string"},
-				},
-				"required": []string{"host", "command"},
-			},
-		}),
-	}
-
-	params := openai.ChatCompletionNewParams{
-		Model: envOr("SHACKLETON_MODEL", "qwen-a3b-thinking"),
-		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage("You are an infrastructure investigation agent. Use the provided tools to answer; do not guess."),
-			openai.UserMessage("What is the current 5-minute load average on host nas?"),
-		},
-		Tools: tools,
-	}
-
-	// Streaming with accumulator — the mode Shackleton will actually use.
-	stream := client.Chat.Completions.NewStreaming(ctx, params)
-	acc := openai.ChatCompletionAccumulator{}
-	for stream.Next() {
-		acc.AddChunk(stream.Current())
-		if tc, ok := acc.JustFinishedToolCall(); ok {
-			fmt.Printf("stream: finished tool call: %s(%s)\n", tc.Name, tc.Arguments)
-		}
-	}
-	if err := stream.Err(); err != nil {
-		return fmt.Errorf("stream: %w", err)
-	}
-	if len(acc.Choices) == 0 {
-		return fmt.Errorf("stream: no choices accumulated")
-	}
-	msg := acc.Choices[0].Message
-	if len(msg.ToolCalls) == 0 {
-		return fmt.Errorf("stream: model made no tool call; content=%q", msg.Content)
-	}
-	for _, tc := range msg.ToolCalls {
-		var args map[string]any
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return fmt.Errorf("tool call %s: arguments are not valid JSON: %w (raw=%q)", tc.Function.Name, err, tc.Function.Arguments)
-		}
-		fmt.Printf("accumulated: %s args=%v id=%s\n", tc.Function.Name, args, tc.ID)
-	}
-	return nil
-}
-
-func probeMCP(ctx context.Context) error {
-	for _, ep := range []string{"http://127.0.0.1:8100/mcp", "http://127.0.0.1:8000/mcp"} {
-		client := mcp.NewClient(&mcp.Implementation{Name: "shackleton", Version: "0.0.1"}, nil)
-		transport := &mcp.StreamableClientTransport{
-			Endpoint: ep,
-			// Header injection through a custom client: the servers ignore the
-			// header today, but this proves the transport carries it (the thanos
-			// probe proves end-to-end acceptance by a gated endpoint).
-			HTTPClient: &http.Client{
-				Transport: &headerRoundTripper{
-					base:    http.DefaultTransport,
-					headers: map[string]string{"Authorization": "Bearer shackleton-injection-test"},
-				},
-				Timeout: 30 * time.Second,
-			},
-		}
-		session, err := client.Connect(ctx, transport, nil)
-		if err != nil {
-			return fmt.Errorf("%s: connect: %w", ep, err)
-		}
-		init := session.InitializeResult()
-		fmt.Printf("%s: server=%s %s\n", ep, init.ServerInfo.Name, init.ServerInfo.Version)
-		tools, err := session.ListTools(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("%s: list tools: %w", ep, err)
-		}
-		for _, t := range tools.Tools {
-			schema, _ := json.Marshal(t.InputSchema)
-			fmt.Printf("  tool %s: %s\n    schema: %s\n", t.Name, t.Description, schema)
-		}
-		session.Close()
-	}
-	return nil
-}
-
-func probeThanos(ctx context.Context) error {
-	auth := os.Getenv("PROMETHEUS_AUTH_HEADER")
-	if auth == "" {
-		return fmt.Errorf("PROMETHEUS_AUTH_HEADER not set")
-	}
-	hc := &http.Client{
-		Transport: &headerRoundTripper{
-			base:    http.DefaultTransport,
-			headers: map[string]string{"Authorization": auth},
-		},
-		Timeout: 30 * time.Second,
-	}
-	url := envOr("THANOS_URL", "https://thanos-querier-openshift-monitoring.apps.ocp.lab.orbital.home") +
-		"/api/v1/query?query=node_load5"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("thanos: %s: %s", resp.Status, body)
-	}
-	fmt.Printf("thanos: 200 OK via injected header; body starts: %.200s\n", body)
-	return nil
 }
 
 func runAgent(ctx context.Context, args []string) error {
@@ -602,7 +431,6 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFa
 	}
 	servers := make([]agent.MCPServer, 0, len(cfg.MCPServers))
 	for _, configured := range cfg.MCPServers {
-		configured := configured
 		servers = append(servers, agent.MCPServer{Name: configured.Name, Connect: func(connectCtx context.Context) (agent.MCPSession, error) {
 			var transport http.RoundTripper = http.DefaultTransport
 			if auth := configured.AuthHeader.Value(); auth != "" {
@@ -615,20 +443,21 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFa
 			}, nil)
 		}})
 	}
-	thanosClient := &http.Client{Transport: &headerRoundTripper{
+	promClient := &http.Client{Transport: &headerRoundTripper{
 		base: http.DefaultTransport, headers: map[string]string{"Authorization": cfg.Prometheus.AuthHeader.Value()},
 	}, Timeout: cfg.Agent.CallTimeout.Duration()}
-	registry, err := agent.NewRegistry(ctx, servers, gatedTools, thanosClient, cfg.Prometheus.URL)
+	registry, err := agent.NewRegistry(ctx, servers, gatedTools, promClient, cfg.Prometheus.URL)
 	if err != nil {
 		return nil, func() {}, err
 	}
 	closeSessions := func() { _ = registry.Close() }
 	openAIClient := openai.NewClient(option.WithBaseURL(cfg.Model.BaseURL), option.WithAPIKey(cfg.Model.APIKey.Value()))
 	complete := agent.StreamCompleter(openAIClient, cfg.Model.Name)
+	prompt := agent.SystemPrompt(cfg.Agent.Prompt, cfg.GatedTools)
 	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
 		return &agent.Runner{
 			Complete: complete, Tools: registry, Approver: approver, Events: events,
-			MaxRounds: cfg.Agent.MaxRounds, CallTimeout: cfg.Agent.CallTimeout.Duration(),
+			Prompt: prompt, MaxRounds: cfg.Agent.MaxRounds, CallTimeout: cfg.Agent.CallTimeout.Duration(),
 			InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration(),
 		}
 	}, closeSessions, nil
