@@ -105,13 +105,35 @@ type MCPServer struct {
 	AuthHeader Secret `yaml:"auth_header,omitempty"`
 }
 
-type Prometheus struct {
+// MetricsSource is a named metrics query API instance. Type prometheus is
+// the only implemented type; each source registers native query tools named
+// after it (query_<name>_instant, query_<name>_range).
+type MetricsSource struct {
+	Name       string `yaml:"name"`
+	Type       string `yaml:"type"`
 	URL        string `yaml:"url"`
-	AuthHeader Secret `yaml:"auth_header"`
+	AuthHeader Secret `yaml:"auth_header,omitempty"`
 }
 
-type Telegram struct {
-	EnvFile string `yaml:"env_file,omitempty"`
+// LogsSource is a named log query API instance. Type loki is the only
+// implemented type; each source registers query_<name>_logs.
+type LogsSource struct {
+	Name       string `yaml:"name"`
+	Type       string `yaml:"type"`
+	URL        string `yaml:"url"`
+	AuthHeader Secret `yaml:"auth_header,omitempty"`
+}
+
+// Channel is a named delivery channel instance, used by both the
+// notifications list (unprivileged: sweep verdicts, answers, the Q&A
+// trigger) and the approvals list (privileged: Approve/Deny). The same type
+// — telegram is the only implemented one — may appear in both with
+// different credentials or audiences.
+type Channel struct {
+	Name     string `yaml:"name"`
+	Type     string `yaml:"type"`
+	BotToken Secret `yaml:"bot_token,omitempty"`
+	ChatID   Secret `yaml:"chat_id,omitempty"`
 }
 
 type TLS struct {
@@ -136,18 +158,20 @@ type Sweep struct {
 func (s Sweep) Parsed() cron.Schedule { return s.schedule }
 
 type Config struct {
-	Listen     string      `yaml:"listen"`
-	TLS        TLS         `yaml:"tls,omitempty"`
-	StateDir   string      `yaml:"state_dir"`
-	EnvFiles   []string    `yaml:"env_files,omitempty"`
-	Model      Model       `yaml:"model"`
-	MCPServers []MCPServer `yaml:"mcp_servers"`
-	Prometheus Prometheus  `yaml:"prometheus"`
-	GatedTools []string    `yaml:"gated_tools"`
-	Telegram   Telegram    `yaml:"telegram"`
-	Agent      Agent       `yaml:"agent"`
-	Sweeps     []Sweep     `yaml:"sweeps,omitempty"`
-	APIToken   Secret      `yaml:"api_token"`
+	Listen         string          `yaml:"listen"`
+	TLS            TLS             `yaml:"tls,omitempty"`
+	StateDir       string          `yaml:"state_dir"`
+	EnvFiles       []string        `yaml:"env_files,omitempty"`
+	Model          Model           `yaml:"model"`
+	MCPServers     []MCPServer     `yaml:"mcp_servers"`
+	MetricsSources []MetricsSource `yaml:"metrics_sources,omitempty"`
+	LogsSources    []LogsSource    `yaml:"logs_sources,omitempty"`
+	GatedTools     []string        `yaml:"gated_tools"`
+	Notifications  []Channel       `yaml:"notifications,omitempty"`
+	Approvals      []Channel       `yaml:"approvals,omitempty"`
+	Agent          Agent           `yaml:"agent"`
+	Sweeps         []Sweep         `yaml:"sweeps,omitempty"`
+	APIToken       Secret          `yaml:"api_token"`
 }
 
 func Load(path string) (*Config, error) {
@@ -164,11 +188,6 @@ func Load(path string) (*Config, error) {
 	for _, envFile := range cfg.EnvFiles {
 		if err := LoadEnvFile(envFile); err != nil {
 			return nil, fmt.Errorf("env_files %q: %w", envFile, err)
-		}
-	}
-	if cfg.Telegram.EnvFile != "" {
-		if err := LoadEnvFile(cfg.Telegram.EnvFile); err != nil {
-			return nil, fmt.Errorf("telegram.env_file %q: %w", cfg.Telegram.EnvFile, err)
 		}
 	}
 	if err := cfg.applyDefaultsAndValidate(); err != nil {
@@ -218,10 +237,32 @@ func (c *Config) applyDefaultsAndValidate() error {
 			return err
 		}
 	}
-	if c.Prometheus.URL == "" {
-		return fmt.Errorf("prometheus.url is required")
+	metricsNames := make(map[string]bool, len(c.MetricsSources))
+	for i := range c.MetricsSources {
+		source := &c.MetricsSources[i]
+		prefix := fmt.Sprintf("metrics_sources[%d]", i)
+		if err := validateSource(prefix, source.Name, source.Type, source.URL, "prometheus", metricsNames); err != nil {
+			return err
+		}
+		if err := source.AuthHeader.resolve(prefix+".auth_header", false); err != nil {
+			return err
+		}
 	}
-	if err := c.Prometheus.AuthHeader.resolve("prometheus.auth_header", true); err != nil {
+	logsNames := make(map[string]bool, len(c.LogsSources))
+	for i := range c.LogsSources {
+		source := &c.LogsSources[i]
+		prefix := fmt.Sprintf("logs_sources[%d]", i)
+		if err := validateSource(prefix, source.Name, source.Type, source.URL, "loki", logsNames); err != nil {
+			return err
+		}
+		if err := source.AuthHeader.resolve(prefix+".auth_header", false); err != nil {
+			return err
+		}
+	}
+	if err := validateChannels("notifications", c.Notifications); err != nil {
+		return err
+	}
+	if err := validateChannels("approvals", c.Approvals); err != nil {
 		return err
 	}
 	if c.Agent.MaxRounds == 0 {
@@ -273,6 +314,48 @@ func (c *Config) applyDefaultsAndValidate() error {
 	}
 	if err := c.APIToken.resolve("api_token", false); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateChannels(list string, channels []Channel) error {
+	names := make(map[string]bool, len(channels))
+	for i := range channels {
+		channel := &channels[i]
+		prefix := fmt.Sprintf("%s[%d]", list, i)
+		if channel.Name == "" {
+			return fmt.Errorf("%s.name is required", prefix)
+		}
+		if names[channel.Name] {
+			return fmt.Errorf("%s.name %q is duplicated", prefix, channel.Name)
+		}
+		names[channel.Name] = true
+		if channel.Type != "telegram" {
+			return fmt.Errorf("%s.type %q is not supported (want telegram)", prefix, channel.Type)
+		}
+		if err := channel.BotToken.resolve(prefix+".bot_token", true); err != nil {
+			return err
+		}
+		if err := channel.ChatID.resolve(prefix+".chat_id", true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSource(prefix, name, sourceType, url, wantType string, seen map[string]bool) error {
+	if name == "" {
+		return fmt.Errorf("%s.name is required", prefix)
+	}
+	if seen[name] {
+		return fmt.Errorf("%s.name %q is duplicated", prefix, name)
+	}
+	seen[name] = true
+	if sourceType != wantType {
+		return fmt.Errorf("%s.type %q is not supported (want %s)", prefix, sourceType, wantType)
+	}
+	if url == "" {
+		return fmt.Errorf("%s.url is required", prefix)
 	}
 	return nil
 }

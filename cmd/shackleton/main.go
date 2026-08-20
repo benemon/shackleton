@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -68,6 +69,18 @@ func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		req.Header.Set(k, v())
 	}
 	return h.base.RoundTrip(req)
+}
+
+// fanoutNotifier delivers to every configured channel; errors are joined so
+// one failing channel does not silence the rest.
+type fanoutNotifier []agent.Notifier
+
+func (f fanoutNotifier) Send(ctx context.Context, text string) error {
+	var errs []error
+	for _, notifier := range f {
+		errs = append(errs, notifier.Send(ctx, text))
+	}
+	return errors.Join(errs...)
 }
 
 func runAgent(ctx context.Context, args []string) error {
@@ -155,23 +168,24 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	core := service.New(investigationCtx, audit, cfg, factory)
+	creds := func(channels []config.Channel) []telegram.Cred {
+		result := make([]telegram.Cred, 0, len(channels))
+		for _, channel := range channels {
+			result = append(result, telegram.Cred{Name: channel.Name, Token: channel.BotToken.Value(), ChatID: channel.ChatID.Value()})
+		}
+		return result
+	}
+	senders, err := telegram.Start(investigationCtx, core, creds(cfg.Notifications), creds(cfg.Approvals))
+	if err != nil {
+		cancelInvestigations()
+		closeSessions()
+		return err
+	}
 	var notifier agent.Notifier
-	telegramToken, telegramChatID := os.Getenv("TG_BOT_TOKEN"), os.Getenv("TG_CHAT_ID")
-	if telegramToken != "" && telegramChatID != "" {
-		sender, err := telegram.NewNotifier(telegramToken, telegramChatID)
-		if err != nil {
-			cancelInvestigations()
-			closeSessions()
-			return err
-		}
-		notifier = sender
-		if _, err := telegram.NewTrigger(investigationCtx, telegramToken, telegramChatID, core); err != nil {
-			cancelInvestigations()
-			closeSessions()
-			return err
-		}
+	if len(senders) > 0 {
+		notifier = fanoutNotifier(senders)
 	} else {
-		fmt.Fprintln(os.Stderr, "telegram trigger disabled: TG_BOT_TOKEN and TG_CHAT_ID are required")
+		fmt.Fprintln(os.Stderr, "no notification channels configured; sweep verdicts land in the audit trail only")
 	}
 	if len(cfg.Sweeps) > 0 {
 		sweep.Run(investigationCtx, cfg.Sweeps, core, notifier)
@@ -414,7 +428,12 @@ func newRunner(ctx context.Context, approverName string, cfg *config.Config) (*a
 	case "cli-approve":
 		runner.Approver = agent.NewCLIApprover(true)
 	case "telegram":
-		adapter, err := telegram.New(ctx, os.Getenv("TG_BOT_TOKEN"), os.Getenv("TG_CHAT_ID"), 0)
+		if len(cfg.Approvals) == 0 {
+			closeSessions()
+			return nil, func() {}, fmt.Errorf("approver telegram requires an approvals channel in the config")
+		}
+		channel := cfg.Approvals[0]
+		adapter, err := telegram.New(ctx, channel.BotToken.Value(), channel.ChatID.Value(), 0)
 		if err != nil {
 			closeSessions()
 			return nil, func() {}, err
@@ -444,17 +463,32 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFa
 			}, nil)
 		}})
 	}
-	promClient := &http.Client{Transport: &headerRoundTripper{
-		base: http.DefaultTransport, headers: map[string]func() string{"Authorization": cfg.Prometheus.AuthHeader.Fresh},
-	}, Timeout: cfg.Agent.CallTimeout.Duration()}
-	registry, err := agent.NewRegistry(ctx, servers, gatedTools, promClient, cfg.Prometheus.URL)
+	nativeSource := func(name, baseURL string, auth config.Secret) agent.NativeSource {
+		var transport http.RoundTripper = http.DefaultTransport
+		if auth.IsSet() {
+			transport = &headerRoundTripper{base: http.DefaultTransport, headers: map[string]func() string{"Authorization": auth.Fresh}}
+		}
+		return agent.NativeSource{Name: name, BaseURL: strings.TrimRight(baseURL, "/"),
+			Client: &http.Client{Transport: transport, Timeout: cfg.Agent.CallTimeout.Duration()}}
+	}
+	var metrics, logs []agent.NativeSource
+	var metricsTools, logsTools []string
+	for _, source := range cfg.MetricsSources {
+		metrics = append(metrics, nativeSource(source.Name, source.URL, source.AuthHeader))
+		metricsTools = append(metricsTools, "query_"+source.Name+"_instant", "query_"+source.Name+"_range")
+	}
+	for _, source := range cfg.LogsSources {
+		logs = append(logs, nativeSource(source.Name, source.URL, source.AuthHeader))
+		logsTools = append(logsTools, "query_"+source.Name+"_logs")
+	}
+	registry, err := agent.NewRegistry(ctx, servers, gatedTools, metrics, logs)
 	if err != nil {
 		return nil, func() {}, err
 	}
 	closeSessions := func() { _ = registry.Close() }
 	openAIClient := openai.NewClient(option.WithBaseURL(cfg.Model.BaseURL), option.WithAPIKey(cfg.Model.APIKey.Value()))
 	complete := agent.StreamCompleter(openAIClient, cfg.Model.Name)
-	prompt := agent.SystemPrompt(cfg.Agent.Prompt, cfg.GatedTools)
+	prompt := agent.SystemPrompt(cfg.Agent.Prompt, metricsTools, logsTools, cfg.GatedTools)
 	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
 		return &agent.Runner{
 			Complete: complete, Tools: registry, Approver: approver, Events: events,

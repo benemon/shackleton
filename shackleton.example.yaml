@@ -26,18 +26,43 @@ mcp_servers:
     url: http://127.0.0.1:8100/mcp
     # Optional environment variable containing the complete Authorization header.
     auth_header: {env: MCP_AUTH_HEADER}
-prometheus:
-  # Base URL of the Prometheus-compatible query API.
-  url: https://prometheus.example.invalid
-  # Complete Authorization header. Prefer a file reference for short-TTL
-  # credentials: file-backed secrets are re-read on every request, so a
-  # rotation agent can renew the file under the running daemon.
-  auth_header: {file: /etc/shackleton/prometheus-auth}
+# Named metrics query APIs, each registering query_<name>_instant and
+# query_<name>_range. Optional; type prometheus covers any
+# Prometheus-compatible endpoint (Prometheus, Thanos, Mimir, Victoria).
+metrics_sources:
+  - name: prometheus
+    type: prometheus
+    url: https://prometheus.example.invalid
+    # Optional complete Authorization header. Prefer a file reference for
+    # short-TTL credentials: file-backed secrets are re-read on every
+    # request, so a rotation agent can renew the file under the running
+    # daemon.
+    auth_header: {file: /etc/shackleton/prometheus-auth}
+# Named log query APIs, each registering query_<name>_logs. Optional; type
+# loki covers any Loki-compatible endpoint.
+logs_sources:
+  - name: loki
+    type: loki
+    url: https://loki.example.invalid
+    auth_header: {env: LOKI_AUTH_HEADER}
 # MCP tool names that require operator approval.
 gated_tools: [run_host_command, run_kubectl_command]
-telegram:
-  # Optional dotenv file defining TG_BOT_TOKEN and TG_CHAT_ID.
-  env_file: /etc/shackleton/telegram.env
+# Unprivileged delivery channels: sweep verdicts and answers out, Q&A in.
+notifications:
+  - name: ops
+    type: telegram
+    bot_token: {env: TG_BOT_TOKEN}
+    chat_id: {env: TG_CHAT_ID}
+# Privileged channels: Approve/Deny buttons for gated tool calls. May share
+# credentials with a notifications channel, or use a separate bot or chat to
+# keep the approving audience smaller. With telegram, channels sharing a bot
+# token are served by one poller (Telegram allows a single getUpdates
+# consumer per token).
+approvals:
+  - name: approvers
+    type: telegram
+    bot_token: {env: TG_BOT_TOKEN}
+    chat_id: {env: TG_APPROVALS_CHAT_ID}
 sweeps:
   # Name used in the investigation trigger and notifications.
   - name: node-fs

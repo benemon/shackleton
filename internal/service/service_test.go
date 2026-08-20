@@ -56,12 +56,12 @@ mcp_servers:
   - name: remediation
     url: http://127.0.0.1:8100/mcp
     auth_header: {env: SERVICE_MCP_SECRET}
-prometheus:
-  url: https://prometheus.example
-  auth_header: {env: SERVICE_PROM_SECRET}
+metrics_sources:
+  - name: prometheus
+    type: prometheus
+    url: https://prometheus.example
+    auth_header: {env: SERVICE_PROM_SECRET}
 gated_tools: [run_host_command]
-telegram:
-  env_file: ""
 agent:
   max_rounds: 4
   call_timeout: 17s
@@ -80,7 +80,7 @@ api_token: {env: SERVICE_API_SECRET}
 
 func completedRunnerFactory(t *testing.T, answer string) RunnerFactory {
 	t.Helper()
-	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, "")
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func approvalRunnerFactory(t *testing.T) RunnerFactory {
 	t.Helper()
 	registry, err := agent.NewRegistry(context.Background(), []agent.MCPServer{{
 		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return approvalSession{}, nil },
-	}}, map[string]bool{"repair": true}, nil, "")
+	}}, map[string]bool{"repair": true}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +518,7 @@ func waitForSSE(t *testing.T, events <-chan string, scanErrors <-chan error, wan
 
 func blockingRunnerFactory(t *testing.T) RunnerFactory {
 	t.Helper()
-	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, "")
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -29,33 +29,100 @@ type pendingApproval struct {
 }
 
 type bot struct {
-	chatID  int64
 	client  *http.Client
 	baseURL string
+}
+
+// Cred is one configured channel's credentials, carried from the config to
+// Start with the channel name for error context.
+type Cred struct {
+	Name   string
+	Token  string
+	ChatID string
+}
+
+type chatRole struct {
+	qa        bool
+	approvals bool
+}
+
+// Start wires serve-mode Telegram: notification chats take the Q&A trigger
+// and receive investigation answers; approval chats receive Approve/Deny
+// buttons and settlements. Telegram allows one getUpdates consumer per bot
+// token, so chats are pooled into one poller per unique token — which is how
+// the same token may back both lists. Returns a Notifier per notifications
+// channel for the sweep fan-out.
+func Start(ctx context.Context, svc *service.Service, notifications, approvals []Cred) ([]agent.Notifier, error) {
+	pollers := make(map[string]map[int64]*chatRole)
+	ensure := func(cred Cred) (*chatRole, error) {
+		id, err := parseChatID(cred.Name, cred.ChatID)
+		if err != nil {
+			return nil, err
+		}
+		if cred.Token == "" {
+			return nil, fmt.Errorf("%s: bot token is empty", cred.Name)
+		}
+		chats := pollers[cred.Token]
+		if chats == nil {
+			chats = make(map[int64]*chatRole)
+			pollers[cred.Token] = chats
+		}
+		role := chats[id]
+		if role == nil {
+			role = &chatRole{}
+			chats[id] = role
+		}
+		return role, nil
+	}
+	var notifiers []agent.Notifier
+	for _, cred := range notifications {
+		role, err := ensure(cred)
+		if err != nil {
+			return nil, err
+		}
+		role.qa = true
+		notifier, err := NewNotifier(cred.Token, cred.ChatID)
+		if err != nil {
+			return nil, err
+		}
+		notifiers = append(notifiers, notifier)
+	}
+	for _, cred := range approvals {
+		role, err := ensure(cred)
+		if err != nil {
+			return nil, err
+		}
+		role.approvals = true
+	}
+	for token, chats := range pollers {
+		newTrigger(ctx, &bot{client: &http.Client{Timeout: 35 * time.Second}, baseURL: "https://api.telegram.org/bot" + token}, chats, svc)
+	}
+	return notifiers, nil
 }
 
 type Adapter struct {
 	timeout time.Duration
 	bot     *bot
+	chatID  int64
 	mu      sync.Mutex
 	pending map[string]*pendingApproval
 }
 
 func New(ctx context.Context, token, chatID string, timeout time.Duration) (*Adapter, error) {
-	client, err := newBot(token, chatID)
+	client, id, err := newBot(token, chatID)
 	if err != nil {
 		return nil, err
 	}
 	if timeout == 0 {
 		timeout = 10 * time.Minute
 	}
-	a := &Adapter{timeout: timeout, bot: client, pending: make(map[string]*pendingApproval)}
+	a := &Adapter{timeout: timeout, bot: client, chatID: id, pending: make(map[string]*pendingApproval)}
 	go a.poll(ctx)
 	return a, nil
 }
 
 func (a *Adapter) Send(ctx context.Context, text string) error {
-	_, err := a.bot.sendMessage(ctx, truncate(text, 3800), nil)
+	_, err := a.bot.sendMessage(ctx, a.chatID, truncate(text, 3800), nil)
 	return err
 }
 
@@ -67,7 +134,7 @@ func (a *Adapter) RequestApproval(ctx context.Context, call agent.ToolCall) (age
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 	keyboard := approvalKeyboard(nonce)
 	text := "Proposed action:\n\n" + call.Human + "\n\nApprove to execute."
-	messageID, err := a.bot.sendMessage(ctx, text, keyboard)
+	messageID, err := a.bot.sendMessage(ctx, a.chatID, text, keyboard)
 	if err != nil {
 		return agent.Decision{}, err
 	}
@@ -90,7 +157,7 @@ func (a *Adapter) RequestApproval(ctx context.Context, call agent.ToolCall) (age
 		if !a.removePending(nonce, p) {
 			return agent.Decision{Approved: <-p.decision, Via: "telegram"}, nil
 		}
-		_ = a.bot.editMessage(context.Background(), messageID, "Expired (no response)")
+		_ = a.bot.editMessage(context.Background(), a.chatID, messageID, "Expired (no response)")
 		return agent.Decision{}, fmt.Errorf("approval timed out after %s", a.timeout)
 	}
 }
@@ -128,7 +195,7 @@ func (a *Adapter) poll(ctx context.Context) {
 }
 
 func (a *Adapter) handleCallback(ctx context.Context, callback callbackQuery) {
-	if callback.Message.Chat.ID != a.bot.chatID || callback.From.ID != a.bot.chatID {
+	if callback.Message.Chat.ID != a.chatID || callback.From.ID != a.chatID {
 		_ = a.bot.answerCallback(ctx, callback.ID, "Unauthorized")
 		return
 	}
@@ -153,59 +220,80 @@ func (a *Adapter) handleCallback(ctx context.Context, callback callbackQuery) {
 		verdict = "Approved"
 	}
 	_ = a.bot.answerCallback(ctx, callback.ID, verdict)
-	_ = a.bot.editMessage(ctx, p.messageID, verdict+":\n\n"+p.human)
+	_ = a.bot.editMessage(ctx, a.chatID, p.messageID, verdict+":\n\n"+p.human)
 	p.decision <- approved
 }
 
 // Notifier sends without polling: it can run alongside another getUpdates
 // consumer on the same bot token, which the Adapter and Trigger cannot.
 type Notifier struct {
-	bot *bot
+	bot    *bot
+	chatID int64
 }
 
 func NewNotifier(token, chatID string) (*Notifier, error) {
-	client, err := newBot(token, chatID)
+	client, id, err := newBot(token, chatID)
 	if err != nil {
 		return nil, err
 	}
-	return &Notifier{bot: client}, nil
+	return &Notifier{bot: client, chatID: id}, nil
 }
 
 func (n *Notifier) Send(ctx context.Context, text string) error {
-	_, err := n.bot.sendMessage(ctx, truncate(text, 3800), nil)
+	_, err := n.bot.sendMessage(ctx, n.chatID, truncate(text, 3800), nil)
 	return err
+}
+
+type postedApproval struct {
+	chatID    int64
+	messageID int64
 }
 
 type Trigger struct {
 	bot      *bot
 	service  *service.Service
+	chats    map[int64]*chatRole
 	mu       sync.Mutex
-	messages map[string]int64
+	messages map[string][]postedApproval
 }
 
-func NewTrigger(ctx context.Context, token, chatID string, svc *service.Service) (*Trigger, error) {
-	client, err := newBot(token, chatID)
-	if err != nil {
-		return nil, err
+func newTrigger(ctx context.Context, client *bot, chats map[int64]*chatRole, svc *service.Service) *Trigger {
+	t := &Trigger{bot: client, service: svc, chats: chats, messages: make(map[string][]postedApproval)}
+	if len(t.approvalChats()) > 0 {
+		events, cancel := svc.SubscribeApprovals()
+		go func() {
+			defer cancel()
+			t.followApprovals(ctx, events)
+		}()
 	}
-	return newTrigger(ctx, client, svc), nil
-}
-
-func newTrigger(ctx context.Context, client *bot, svc *service.Service) *Trigger {
-	t := &Trigger{bot: client, service: svc, messages: make(map[string]int64)}
-	events, cancel := svc.SubscribeApprovals()
-	go func() {
-		defer cancel()
-		t.followApprovals(ctx, events)
-	}()
 	go t.poll(ctx)
 	return t
 }
 
+func (t *Trigger) approvalChats() []int64 {
+	var ids []int64
+	for id, role := range t.chats {
+		if role.approvals {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func (t *Trigger) poll(ctx context.Context) {
+	allowed := []string{}
+	for _, role := range t.chats {
+		if role.qa {
+			allowed = append(allowed, "message")
+			break
+		}
+	}
+	if len(t.approvalChats()) > 0 {
+		allowed = append(allowed, "callback_query")
+	}
 	var offset int64
 	for ctx.Err() == nil {
-		updates, err := t.bot.getUpdates(ctx, offset, []string{"message", "callback_query"})
+		updates, err := t.bot.getUpdates(ctx, offset, allowed)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("telegram getUpdates: %v", err)
@@ -228,7 +316,8 @@ func (t *Trigger) poll(ctx context.Context) {
 }
 
 func (t *Trigger) handleMessage(ctx context.Context, message message) {
-	if message.Chat.ID != t.bot.chatID || message.From.ID != t.bot.chatID {
+	role := t.chats[message.Chat.ID]
+	if role == nil || !role.qa || message.From.ID != message.Chat.ID {
 		return
 	}
 	if strings.TrimSpace(message.Text) == "" || strings.HasPrefix(message.Text, "/") {
@@ -239,13 +328,13 @@ func (t *Trigger) handleMessage(ctx context.Context, message message) {
 		log.Printf("telegram create investigation: %v", err)
 		return
 	}
-	if _, err := t.bot.sendMessage(ctx, "Investigating…", nil); err != nil {
+	if _, err := t.bot.sendMessage(ctx, message.Chat.ID, "Investigating…", nil); err != nil {
 		log.Printf("telegram send acknowledgement: %v", err)
 	}
-	go t.followInvestigation(ctx, summary.ID)
+	go t.followInvestigation(ctx, message.Chat.ID, summary.ID)
 }
 
-func (t *Trigger) followInvestigation(ctx context.Context, id string) {
+func (t *Trigger) followInvestigation(ctx context.Context, chatID int64, id string) {
 	snapshot, live, cancel, err := t.service.FollowInvestigation(id)
 	if err != nil {
 		log.Printf("telegram follow investigation %s: %v", id, err)
@@ -253,7 +342,7 @@ func (t *Trigger) followInvestigation(ctx context.Context, id string) {
 	}
 	defer cancel()
 	for _, event := range snapshot {
-		if t.sendTerminal(ctx, event) {
+		if t.sendTerminal(ctx, chatID, event) {
 			return
 		}
 	}
@@ -262,14 +351,14 @@ func (t *Trigger) followInvestigation(ctx context.Context, id string) {
 		case <-ctx.Done():
 			return
 		case event, ok := <-live:
-			if !ok || t.sendTerminal(ctx, event) {
+			if !ok || t.sendTerminal(ctx, chatID, event) {
 				return
 			}
 		}
 	}
 }
 
-func (t *Trigger) sendTerminal(ctx context.Context, event store.Event) bool {
+func (t *Trigger) sendTerminal(ctx context.Context, chatID int64, event store.Event) bool {
 	var text string
 	switch event.Type {
 	case store.EventCompleted:
@@ -289,7 +378,7 @@ func (t *Trigger) sendTerminal(ctx context.Context, event store.Event) bool {
 	default:
 		return false
 	}
-	if _, err := t.bot.sendMessage(ctx, truncate(text, 3800), nil); err != nil {
+	if _, err := t.bot.sendMessage(ctx, chatID, truncate(text, 3800), nil); err != nil {
 		log.Printf("telegram send investigation result: %v", err)
 	}
 	return true
@@ -316,39 +405,42 @@ func (t *Trigger) followApprovals(ctx context.Context, events <-chan service.App
 
 func (t *Trigger) requestApproval(ctx context.Context, approval service.PendingApproval) {
 	text := "Proposed action:\n\n" + approval.Human + "\n\nApprove to execute."
-	messageID, err := t.bot.sendMessage(ctx, text, approvalKeyboard(approval.ID))
-	if err != nil {
-		log.Printf("telegram send approval: %v", err)
+	var posted []postedApproval
+	for _, chatID := range t.approvalChats() {
+		messageID, err := t.bot.sendMessage(ctx, chatID, text, approvalKeyboard(approval.ID))
+		if err != nil {
+			log.Printf("telegram send approval: %v", err)
+			continue
+		}
+		posted = append(posted, postedApproval{chatID: chatID, messageID: messageID})
+	}
+	if len(posted) == 0 {
 		return
 	}
 	t.mu.Lock()
-	t.messages[approval.ID] = messageID
+	t.messages[approval.ID] = posted
 	t.mu.Unlock()
 }
 
 func (t *Trigger) settleApproval(ctx context.Context, event service.ApprovalEvent) {
 	t.mu.Lock()
-	messageID, ok := t.messages[event.Approval.ID]
+	posted := t.messages[event.Approval.ID]
+	delete(t.messages, event.Approval.ID)
 	t.mu.Unlock()
-	if !ok {
-		return
-	}
 	verdict := "Denied"
 	if event.Approved {
 		verdict = "Approved"
 	}
-	if err := t.bot.editMessage(ctx, messageID, verdict+" via "+event.Via+":\n\n"+event.Approval.Human); err != nil {
-		log.Printf("telegram edit settled approval: %v", err)
+	for _, msg := range posted {
+		if err := t.bot.editMessage(ctx, msg.chatID, msg.messageID, verdict+" via "+event.Via+":\n\n"+event.Approval.Human); err != nil {
+			log.Printf("telegram edit settled approval: %v", err)
+		}
 	}
-	t.mu.Lock()
-	if t.messages[event.Approval.ID] == messageID {
-		delete(t.messages, event.Approval.ID)
-	}
-	t.mu.Unlock()
 }
 
 func (t *Trigger) handleCallback(ctx context.Context, callback callbackQuery) {
-	if callback.Message.Chat.ID != t.bot.chatID || callback.From.ID != t.bot.chatID {
+	role := t.chats[callback.Message.Chat.ID]
+	if role == nil || !role.approvals || callback.From.ID != callback.Message.Chat.ID {
 		_ = t.bot.answerCallback(ctx, callback.ID, "Unauthorized")
 		return
 	}
@@ -358,9 +450,15 @@ func (t *Trigger) handleCallback(ctx context.Context, callback callbackQuery) {
 		return
 	}
 	t.mu.Lock()
-	messageID, exists := t.messages[approvalID]
+	known := false
+	for _, msg := range t.messages[approvalID] {
+		if msg.chatID == callback.Message.Chat.ID && msg.messageID == callback.Message.MessageID {
+			known = true
+			break
+		}
+	}
 	t.mu.Unlock()
-	if !exists || messageID != callback.Message.MessageID {
+	if !known {
 		log.Printf("telegram callback ignored for unknown, settled, or stale approval %q", approvalID)
 		return
 	}
@@ -417,18 +515,26 @@ type chat struct {
 	ID int64 `json:"id"`
 }
 
-func newBot(token, chatID string) (*bot, error) {
+func newBot(token, chatID string) (*bot, int64, error) {
 	if token == "" {
-		return nil, fmt.Errorf("TG_BOT_TOKEN is not set")
+		return nil, 0, fmt.Errorf("bot token is not set")
 	}
-	id, err := strconv.ParseInt(chatID, 10, 64)
+	id, err := parseChatID("chat_id", chatID)
 	if err != nil {
-		return nil, fmt.Errorf("TG_CHAT_ID: %w", err)
+		return nil, 0, err
 	}
 	return &bot{
-		chatID: id, client: &http.Client{Timeout: 35 * time.Second},
+		client:  &http.Client{Timeout: 35 * time.Second},
 		baseURL: "https://api.telegram.org/bot" + token,
-	}, nil
+	}, id, nil
+}
+
+func parseChatID(name, chatID string) (int64, error) {
+	id, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: chat id %q is not numeric", name, chatID)
+	}
+	return id, nil
 }
 
 func (b *bot) getUpdates(ctx context.Context, offset int64, allowed []string) ([]update, error) {
@@ -439,8 +545,8 @@ func (b *bot) getUpdates(ctx context.Context, offset int64, allowed []string) ([
 	return response.Result, err
 }
 
-func (b *bot) sendMessage(ctx context.Context, text string, markup any) (int64, error) {
-	payload := map[string]any{"chat_id": b.chatID, "text": text}
+func (b *bot) sendMessage(ctx context.Context, chatID int64, text string, markup any) (int64, error) {
+	payload := map[string]any{"chat_id": chatID, "text": text}
 	if markup != nil {
 		payload["reply_markup"] = markup
 	}
@@ -457,8 +563,8 @@ func (b *bot) sendMessage(ctx context.Context, text string, markup any) (int64, 
 	return response.Result.MessageID, nil
 }
 
-func (b *bot) editMessage(ctx context.Context, messageID int64, text string) error {
-	return b.post(ctx, "editMessageText", map[string]any{"chat_id": b.chatID, "message_id": messageID, "text": text}, nil)
+func (b *bot) editMessage(ctx context.Context, chatID, messageID int64, text string) error {
+	return b.post(ctx, "editMessageText", map[string]any{"chat_id": chatID, "message_id": messageID, "text": text}, nil)
 }
 
 func (b *bot) answerCallback(ctx context.Context, callbackID, text string) error {

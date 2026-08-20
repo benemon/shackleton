@@ -64,13 +64,13 @@ func testBot(t *testing.T) (*bot, *telegramRecorder) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"message_id": messageID}})
 	}))
 	t.Cleanup(server.Close)
-	return &bot{chatID: 7, client: server.Client(), baseURL: server.URL}, recorder
+	return &bot{client: server.Client(), baseURL: server.URL}, recorder
 }
 
 func testAdapter(t *testing.T) (*Adapter, *telegramRecorder) {
 	t.Helper()
 	client, recorder := testBot(t)
-	return &Adapter{bot: client, pending: make(map[string]*pendingApproval)}, recorder
+	return &Adapter{bot: client, chatID: 7, pending: make(map[string]*pendingApproval)}, recorder
 }
 
 func (r *telegramRecorder) matching(method string) []telegramCall {
@@ -185,7 +185,7 @@ func (triggerApprovalSession) Close() error                                { ret
 
 func completedFactory(t *testing.T, answer string) service.RunnerFactory {
 	t.Helper()
-	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, "")
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func triggerApprovalFactory(t *testing.T) service.RunnerFactory {
 	t.Helper()
 	registry, err := agent.NewRegistry(context.Background(), []agent.MCPServer{{
 		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return triggerApprovalSession{}, nil },
-	}}, map[string]bool{"repair": true}, nil, "")
+	}}, map[string]bool{"repair": true}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func testTrigger(t *testing.T, svc *service.Service) (*Trigger, *telegramRecorde
 	client, recorder := testBot(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	trigger := &Trigger{bot: client, service: svc, messages: make(map[string]int64)}
+	trigger := &Trigger{bot: client, service: svc, chats: map[int64]*chatRole{7: {qa: true, approvals: true}}, messages: make(map[string][]postedApproval)}
 	events, unsubscribe := svc.SubscribeApprovals()
 	go func() {
 		defer unsubscribe()
@@ -269,7 +269,7 @@ func TestTriggerQuestionAuthorizationAndHappyPath(t *testing.T) {
 		{UpdateID: 4, Message: &message{Text: "question", Chat: chat{ID: 7}, From: user{ID: 7}}},
 	}
 	recorder.mu.Unlock()
-	newTrigger(ctx, client, svc)
+	newTrigger(ctx, client, map[int64]*chatRole{7: {qa: true, approvals: true}}, svc)
 	deadline := time.Now().Add(time.Second)
 	for len(svc.ListInvestigations()) != 1 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
@@ -350,6 +350,57 @@ func TestTriggerCallbackAuthorizationStalenessDenialAndVia(t *testing.T) {
 		return
 	}
 	t.Fatal("approval_decided event not recorded")
+}
+
+func TestChatRolesSeparateQAFromApprovals(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(context.Background(), audit, nil, triggerApprovalFactory(t))
+	client, recorder := testBot(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	// Chat 7 is notifications-only, chat 9 approvals-only.
+	trigger := &Trigger{bot: client, service: svc,
+		chats:    map[int64]*chatRole{7: {qa: true}, 9: {approvals: true}},
+		messages: make(map[string][]postedApproval)}
+	events, unsubscribe := svc.SubscribeApprovals()
+	go func() {
+		defer unsubscribe()
+		trigger.followApprovals(ctx, events)
+	}()
+
+	msg := message{Text: "repair"}
+	msg.Chat.ID, msg.From.ID = 9, 9
+	trigger.handleMessage(ctx, msg)
+	if got := len(svc.ListInvestigations()); got != 0 {
+		t.Fatalf("approvals-only chat created %d investigations", got)
+	}
+	msg.Chat.ID, msg.From.ID = 7, 7
+	trigger.handleMessage(ctx, msg)
+	pending := waitForPending(t, svc)
+	// Two sends land: the Q&A acknowledgement in chat 7, then the approval
+	// buttons in chat 9.
+	approvalMessages := waitForTelegramCalls(t, recorder, "sendMessage", 2)
+	var buttons []telegramCall
+	for _, call := range approvalMessages {
+		if call.payload["reply_markup"] != nil {
+			buttons = append(buttons, call)
+		}
+	}
+	if len(buttons) != 1 || buttons[0].payload["chat_id"] != float64(9) {
+		t.Fatalf("approval buttons = %+v", buttons)
+	}
+	trigger.handleCallback(ctx, callback("qa-chat", "d:"+pending.ID, 7, 7, buttons[0].messageID))
+	if len(svc.ListPendingApprovals()) != 1 {
+		t.Fatal("notifications-only chat settled an approval")
+	}
+	trigger.handleCallback(ctx, callback("ok", "d:"+pending.ID, 9, 9, buttons[0].messageID))
+	svc.Wait()
+	if len(svc.ListPendingApprovals()) != 0 {
+		t.Fatal("approvals chat could not settle")
+	}
 }
 
 func TestTriggerEditsApprovalSettledViaAPI(t *testing.T) {

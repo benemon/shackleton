@@ -41,9 +41,11 @@ model:
 mcp_servers:
   - name: remediation
     url: http://127.0.0.1:8100/mcp
-prometheus:
-  url: https://prometheus.example
-  auth_header: {env: CONFIG_PROM_AUTH}
+metrics_sources:
+  - name: prometheus
+    type: prometheus
+    url: https://prometheus.example
+    auth_header: {env: CONFIG_PROM_AUTH}
 gated_tools: []
 api_token: {env: CONFIG_API_TOKEN}
 `

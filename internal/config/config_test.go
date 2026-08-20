@@ -24,9 +24,11 @@ model:
 mcp_servers:
   - name: remediation
     url: http://127.0.0.1:8100/mcp
-prometheus:
-  url: https://prometheus.example
-  auth_header: {env: CONFIG_PROM_AUTH}
+metrics_sources:
+  - name: prometheus
+    type: prometheus
+    url: https://prometheus.example
+    auth_header: {env: CONFIG_PROM_AUTH}
 gated_tools: [run_host_command]
 agent:
   max_rounds: 4
@@ -52,8 +54,9 @@ func TestLoadValidatesRequiredFieldsAndAppliesDefaults(t *testing.T) {
 		{"mcp_servers", "mcp_servers:\n  - name: remediation\n    url: http://127.0.0.1:8100/mcp\n", ""},
 		{"mcp_servers[0].name", "  - name: remediation\n", "  - name: \"\"\n"},
 		{"mcp_servers[0].url", "    url: http://127.0.0.1:8100/mcp\n", ""},
-		{"prometheus.url", "  url: https://prometheus.example\n", ""},
-		{"prometheus.auth_header", "  auth_header: {env: CONFIG_PROM_AUTH}\n", ""},
+		{"metrics_sources[0].name", "  - name: prometheus\n", "  - name: \"\"\n"},
+		{"metrics_sources[0].type", "    type: prometheus\n", "    type: influx\n"},
+		{"metrics_sources[0].url", "    url: https://prometheus.example\n", ""},
 	}
 	for _, test := range required {
 		t.Run(test.field, func(t *testing.T) {
@@ -144,27 +147,53 @@ func TestFreshRereadsFileSecretsAndKeepsEnvSecretsStatic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Prometheus.AuthHeader.Fresh(); got != "Bearer first" {
+	if got := cfg.MetricsSources[0].AuthHeader.Fresh(); got != "Bearer first" {
 		t.Fatalf("initial fresh value = %q", got)
 	}
 	if err := os.WriteFile(secretPath, []byte("Bearer rotated\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Prometheus.AuthHeader.Fresh(); got != "Bearer rotated" {
+	if got := cfg.MetricsSources[0].AuthHeader.Fresh(); got != "Bearer rotated" {
 		t.Fatalf("rotated fresh value = %q", got)
 	}
-	if got := cfg.Prometheus.AuthHeader.Value(); got != "Bearer first" {
+	if got := cfg.MetricsSources[0].AuthHeader.Value(); got != "Bearer first" {
 		t.Fatalf("cached value changed to %q", got)
 	}
 	if err := os.WriteFile(secretPath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Prometheus.AuthHeader.Fresh(); got != "Bearer first" {
+	if got := cfg.MetricsSources[0].AuthHeader.Fresh(); got != "Bearer first" {
 		t.Fatalf("empty file should fall back to startup value, got %q", got)
 	}
 	t.Setenv("CONFIG_API_KEY", "changed-after-load")
 	if got := cfg.Model.APIKey.Fresh(); got != "environment-secret" {
 		t.Fatalf("env-backed fresh value = %q", got)
+	}
+}
+
+func TestNotificationChannelValidation(t *testing.T) {
+	t.Setenv("CONFIG_BOT_TOKEN", "bot-secret")
+	t.Setenv("CONFIG_CHAT_ID", "12345")
+	valid := "notifications:\n  - name: ops\n    type: telegram\n    bot_token: {env: CONFIG_BOT_TOKEN}\n    chat_id: {env: CONFIG_CHAT_ID}\n"
+	cfg, err := Load(validConfig(t, valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Notifications) != 1 || cfg.Notifications[0].BotToken.Value() != "bot-secret" || cfg.Notifications[0].ChatID.Value() != "12345" {
+		t.Fatalf("channel = %+v", cfg.Notifications)
+	}
+	for _, test := range []struct {
+		wantErr string
+		extra   string
+	}{
+		{"notifications[1].name \"ops\" is duplicated", valid + "  - name: ops\n    type: telegram\n    bot_token: {env: CONFIG_BOT_TOKEN}\n    chat_id: {env: CONFIG_CHAT_ID}\n"},
+		{"notifications[0].type \"pager\" is not supported", "notifications:\n  - name: ops\n    type: pager\n"},
+		{"notifications[0].bot_token is required", "notifications:\n  - name: ops\n    type: telegram\n    chat_id: {env: CONFIG_CHAT_ID}\n"},
+		{"approvals[0].type \"pager\" is not supported", "approvals:\n  - name: approvers\n    type: pager\n"},
+	} {
+		if _, err := Load(validConfig(t, test.extra)); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+			t.Errorf("want %q, got %v", test.wantErr, err)
+		}
 	}
 }
 

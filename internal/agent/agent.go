@@ -13,15 +13,21 @@ import (
 
 // SystemPrompt assembles the system prompt from the operator-authored
 // preamble (role + topology, from agent.prompt in the config) and the fixed
-// behavioral contract. The denial sentence is a hard requirement: the model
-// must report an operator deny as a decision, not invent a rationale for it.
-func SystemPrompt(preamble string, gatedTools []string) string {
+// behavioral contract, with tool names drawn from what is actually
+// registered. The denial sentence is a hard requirement: the model must
+// report an operator deny as a decision, not invent a rationale for it.
+func SystemPrompt(preamble string, metricsTools, logsTools, gatedTools []string) string {
 	var b strings.Builder
 	if preamble == "" {
 		preamble = "You are an infrastructure investigation agent."
 	}
 	b.WriteString(preamble)
-	b.WriteString(" query_prometheus_instant and query_prometheus_range are the ONLY way to read metrics.")
+	if len(metricsTools) > 0 {
+		b.WriteString(" " + strings.Join(metricsTools, " and ") + " are the ONLY way to read metrics.")
+	}
+	if len(logsTools) > 0 {
+		b.WriteString(" Use " + strings.Join(logsTools, " and ") + " to search logs when corroborating a finding.")
+	}
 	if len(gatedTools) > 0 {
 		b.WriteString(" The gated tools " + strings.Join(gatedTools, " and ") + " are for APPLYING an approved change, never for lookups; prefer auto-approved read tools.")
 	}
@@ -129,7 +135,7 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 	}
 	prompt := r.Prompt
 	if prompt == "" {
-		prompt = SystemPrompt("", nil)
+		prompt = SystemPrompt("", nil, nil, nil)
 	}
 	messages := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(prompt + " The current time is " + time.Now().UTC().Format(time.RFC3339) + "."),

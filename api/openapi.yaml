@@ -518,10 +518,32 @@ components:
           properties:
             file:
               type: string
+    ChannelView:
+      type: object
+      additionalProperties: false
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+    SourceView:
+      type: object
+      additionalProperties: false
+      required: [name, type, url]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        url:
+          type: string
+        auth_header:
+          $ref: '#/components/schemas/SecretRef'
     ConfigView:
       type: object
       additionalProperties: false
-      required: [listen, state_dir, env_files, model, mcp_servers, prometheus, gated_tools, telegram, agent, sweeps, api_token]
+      required: [listen, state_dir, env_files, model, mcp_servers, metrics_sources, logs_sources, gated_tools, notifications, approvals, agent, sweeps, api_token]
       properties:
         listen:
           type: string
@@ -555,26 +577,26 @@ components:
                 type: string
               auth_header:
                 $ref: '#/components/schemas/SecretRef'
-        prometheus:
-          type: object
-          additionalProperties: false
-          required: [url, auth_header]
-          properties:
-            url:
-              type: string
-            auth_header:
-              $ref: '#/components/schemas/SecretRef'
+        metrics_sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceView'
+        logs_sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceView'
         gated_tools:
           type: array
           items:
             type: string
-        telegram:
-          type: object
-          additionalProperties: false
-          required: [env_file]
-          properties:
-            env_file:
-              type: string
+        notifications:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChannelView'
+        approvals:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChannelView'
         agent:
           type: object
           additionalProperties: false

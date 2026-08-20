@@ -42,17 +42,19 @@ type ApprovalEvent struct {
 }
 
 type ConfigView struct {
-	Listen     string           `json:"listen"`
-	StateDir   string           `json:"state_dir"`
-	EnvFiles   []string         `json:"env_files"`
-	Model      ModelView        `json:"model"`
-	MCPServers []MCPServerView  `json:"mcp_servers"`
-	Prometheus PrometheusView   `json:"prometheus"`
-	GatedTools []string         `json:"gated_tools"`
-	Telegram   TelegramView     `json:"telegram"`
-	Agent      AgentView        `json:"agent"`
-	Sweeps     []SweepView      `json:"sweeps"`
-	APIToken   config.SecretRef `json:"api_token"`
+	Listen         string           `json:"listen"`
+	StateDir       string           `json:"state_dir"`
+	EnvFiles       []string         `json:"env_files"`
+	Model          ModelView        `json:"model"`
+	MCPServers     []MCPServerView  `json:"mcp_servers"`
+	MetricsSources []SourceView     `json:"metrics_sources"`
+	LogsSources    []SourceView     `json:"logs_sources"`
+	GatedTools     []string         `json:"gated_tools"`
+	Notifications  []ChannelView    `json:"notifications"`
+	Approvals      []ChannelView    `json:"approvals"`
+	Agent          AgentView        `json:"agent"`
+	Sweeps         []SweepView      `json:"sweeps"`
+	APIToken       config.SecretRef `json:"api_token"`
 }
 
 type SweepView struct {
@@ -73,13 +75,16 @@ type MCPServerView struct {
 	AuthHeader *config.SecretRef `json:"auth_header,omitempty"`
 }
 
-type PrometheusView struct {
-	URL        string           `json:"url"`
-	AuthHeader config.SecretRef `json:"auth_header"`
+type SourceView struct {
+	Name       string            `json:"name"`
+	Type       string            `json:"type"`
+	URL        string            `json:"url"`
+	AuthHeader *config.SecretRef `json:"auth_header,omitempty"`
 }
 
-type TelegramView struct {
-	EnvFile string `json:"env_file"`
+type ChannelView struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
 }
 
 type AgentView struct {
@@ -344,13 +349,38 @@ func (s *Service) ConfigView() ConfigView {
 	for _, sweep := range cfg.Sweeps {
 		sweeps = append(sweeps, SweepView{Name: sweep.Name, Schedule: sweep.Schedule, Question: sweep.Question})
 	}
+	sourceView := func(name, sourceType, url string, auth config.Secret) SourceView {
+		view := SourceView{Name: name, Type: sourceType, URL: url}
+		if auth.IsSet() {
+			ref := auth.Ref()
+			view.AuthHeader = &ref
+		}
+		return view
+	}
+	metrics := make([]SourceView, 0, len(cfg.MetricsSources))
+	for _, source := range cfg.MetricsSources {
+		metrics = append(metrics, sourceView(source.Name, source.Type, source.URL, source.AuthHeader))
+	}
+	logs := make([]SourceView, 0, len(cfg.LogsSources))
+	for _, source := range cfg.LogsSources {
+		logs = append(logs, sourceView(source.Name, source.Type, source.URL, source.AuthHeader))
+	}
+	channelViews := func(channels []config.Channel) []ChannelView {
+		views := make([]ChannelView, 0, len(channels))
+		for _, channel := range channels {
+			views = append(views, ChannelView{Name: channel.Name, Type: channel.Type})
+		}
+		return views
+	}
 	return ConfigView{
 		Listen: cfg.Listen, StateDir: cfg.StateDir, EnvFiles: append([]string{}, cfg.EnvFiles...), Sweeps: sweeps,
-		Model:      ModelView{BaseURL: cfg.Model.BaseURL, Name: cfg.Model.Name, APIKey: cfg.Model.APIKey.Ref()},
-		MCPServers: servers,
-		Prometheus: PrometheusView{URL: cfg.Prometheus.URL, AuthHeader: cfg.Prometheus.AuthHeader.Ref()},
-		GatedTools: append([]string{}, cfg.GatedTools...), Telegram: TelegramView{EnvFile: cfg.Telegram.EnvFile},
-		Agent:    AgentView{MaxRounds: cfg.Agent.MaxRounds, CallTimeout: cfg.Agent.CallTimeout.Duration().String(), InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration().String()},
+		Model:          ModelView{BaseURL: cfg.Model.BaseURL, Name: cfg.Model.Name, APIKey: cfg.Model.APIKey.Ref()},
+		MCPServers:     servers,
+		MetricsSources: metrics, LogsSources: logs,
+		Notifications: channelViews(cfg.Notifications), Approvals: channelViews(cfg.Approvals),
+		GatedTools: append([]string{}, cfg.GatedTools...),
+		Agent: AgentView{MaxRounds: cfg.Agent.MaxRounds,
+			CallTimeout: cfg.Agent.CallTimeout.Duration().String(), InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration().String()},
 		APIToken: cfg.APIToken.Ref(),
 	}
 }

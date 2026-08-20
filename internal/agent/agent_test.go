@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -45,19 +48,30 @@ func testRegistry(t *testing.T, called *int) *Registry {
 }
 
 func TestSystemPrompt(t *testing.T) {
-	got := SystemPrompt("You investigate the ACME estate.", []string{"run_host_command", "run_kubectl_command"})
+	got := SystemPrompt("You investigate the ACME estate.",
+		[]string{"query_prometheus_instant", "query_prometheus_range"},
+		[]string{"query_loki_logs"},
+		[]string{"run_host_command", "run_kubectl_command"})
 	if !strings.HasPrefix(got, "You investigate the ACME estate. ") {
 		t.Errorf("preamble missing: %q", got)
+	}
+	if !strings.Contains(got, "query_prometheus_instant and query_prometheus_range are the ONLY way to read metrics.") {
+		t.Errorf("metrics sentence missing: %q", got)
+	}
+	if !strings.Contains(got, "Use query_loki_logs to search logs") {
+		t.Errorf("logs sentence missing: %q", got)
 	}
 	if !strings.Contains(got, "The gated tools run_host_command and run_kubectl_command are for APPLYING an approved change") {
 		t.Errorf("gated tool sentence missing: %q", got)
 	}
-	got = SystemPrompt("", nil)
+	got = SystemPrompt("", nil, nil, nil)
 	if !strings.HasPrefix(got, "You are an infrastructure investigation agent. ") {
 		t.Errorf("default preamble missing: %q", got)
 	}
-	if strings.Contains(got, "gated tools") {
-		t.Errorf("gated tool sentence present with no gated tools: %q", got)
+	for _, absent := range []string{"ONLY way to read metrics", "search logs", "gated tools"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("%q present with nothing registered: %q", absent, got)
+		}
 	}
 }
 
@@ -268,6 +282,75 @@ func (s *fakeMCPSession) CallTool(context.Context, *mcp.CallToolParams) (*mcp.Ca
 func (s *fakeMCPSession) Ping(context.Context, *mcp.PingParams) error { return s.pingErr }
 func (s *fakeMCPSession) Close() error                                { return nil }
 
+func TestDuplicateToolNamesAcrossServersFailStartup(t *testing.T) {
+	connect := func(context.Context) (MCPSession, error) { return &fakeMCPSession{}, nil }
+	_, err := NewRegistry(context.Background(),
+		[]MCPServer{{Name: "first", Connect: connect}, {Name: "second", Connect: connect}}, nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), `second: duplicate tool "repair"`) {
+		t.Fatalf("collision error = %v", err)
+	}
+}
+
+func TestNativeSourcesRegisterNamedTools(t *testing.T) {
+	var request *http.Request
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request = r.Clone(context.Background())
+		fmt.Fprint(w, "payload")
+	}))
+	defer server.Close()
+	source := func(name string) NativeSource {
+		return NativeSource{Name: name, Client: server.Client(), BaseURL: server.URL}
+	}
+	registry, err := NewRegistry(context.Background(), nil, nil,
+		[]NativeSource{source("prometheus"), source("vm")}, []NativeSource{source("loki")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	for _, name := range []string{"query_prometheus_instant", "query_prometheus_range",
+		"query_vm_instant", "query_vm_range", "query_loki_logs"} {
+		if _, ok := registry.tools[name]; !ok {
+			t.Errorf("tool %s not registered", name)
+		}
+	}
+	result, err := registry.tools["query_loki_logs"].call(context.Background(),
+		map[string]any{"query": `{app="x"}`, "start": "s", "end": "e"})
+	if err != nil || result != "payload" {
+		t.Fatalf("loki call = %q, %v", result, err)
+	}
+	if request.URL.Path != "/loki/api/v1/query_range" {
+		t.Errorf("loki path = %s", request.URL.Path)
+	}
+	q := request.URL.Query()
+	if q.Get("direction") != "backward" || q.Get("limit") != "100" || q.Get("query") != `{app="x"}` {
+		t.Errorf("loki params = %v", q)
+	}
+	if _, err := registry.tools["query_vm_instant"].call(context.Background(), map[string]any{"query": "up"}); err != nil {
+		t.Fatal(err)
+	}
+	if request.URL.Path != "/api/v1/query" {
+		t.Errorf("prometheus path = %s", request.URL.Path)
+	}
+}
+
+func TestNativeSourceErrorsCarrySourceName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "denied", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	registry, err := NewRegistry(context.Background(), nil, nil, nil,
+		[]NativeSource{{Name: "loki", Client: server.Client(), BaseURL: server.URL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	_, err = registry.tools["query_loki_logs"].call(context.Background(),
+		map[string]any{"query": "q", "start": "s", "end": "e"})
+	if err == nil || !strings.HasPrefix(err.Error(), "loki: 401") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestRegistryReconnectsAndRetriesFailedToolCall(t *testing.T) {
 	connects := 0
 	sessions := []*fakeMCPSession{
@@ -279,7 +362,7 @@ func TestRegistryReconnectsAndRetriesFailedToolCall(t *testing.T) {
 		connects++
 		return session, nil
 	}
-	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}}, nil, nil, "")
+	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +388,7 @@ func TestRegistryNeverRetriesGatedToolCall(t *testing.T) {
 		return session, nil
 	}
 	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}},
-		map[string]bool{"repair": true}, nil, "")
+		map[string]bool{"repair": true}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

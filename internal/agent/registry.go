@@ -45,13 +45,21 @@ type MCPServer struct {
 	Connect MCPConnectFunc
 }
 
+// NativeSource is a metrics or logs query API instance backed by an HTTP
+// client that already carries its auth.
+type NativeSource struct {
+	Name    string
+	Client  *http.Client
+	BaseURL string
+}
+
 type reconnectingSession struct {
 	mu      sync.Mutex
 	connect MCPConnectFunc
 	session MCPSession
 }
 
-func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string]bool, promClient *http.Client, promURL string) (*Registry, error) {
+func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string]bool, metrics, logs []NativeSource) (*Registry, error) {
 	r := &Registry{tools: make(map[string]toolEntry)}
 	for _, server := range servers {
 		session, err := server.Connect(ctx)
@@ -80,13 +88,19 @@ func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string
 			}); err != nil {
 				reconnecting.close()
 				r.Close()
-				return nil, err
+				return nil, fmt.Errorf("%s: %w", server.Name, err)
 			}
 		}
 		r.sessions = append(r.sessions, reconnecting)
 	}
-	if promClient != nil {
-		if err := r.addNativePrometheus(promClient, strings.TrimRight(promURL, "/")); err != nil {
+	for _, source := range metrics {
+		if err := r.addNativePrometheus(source); err != nil {
+			r.Close()
+			return nil, err
+		}
+	}
+	for _, source := range logs {
+		if err := r.addNativeLoki(source); err != nil {
 			r.Close()
 			return nil, err
 		}
@@ -159,6 +173,11 @@ func (r *Registry) OpenAITools() []openai.ChatCompletionToolUnionParam {
 }
 
 func (r *Registry) add(name, description string, inputSchema any, gated bool, call func(context.Context, map[string]any) (string, error)) error {
+	// Last-wins would silently shadow one server's tool with another's and
+	// make gating by name ambiguous.
+	if _, exists := r.tools[name]; exists {
+		return fmt.Errorf("duplicate tool %q", name)
+	}
 	b, err := json.Marshal(inputSchema)
 	if err != nil {
 		return fmt.Errorf("tool %s schema: %w", name, err)
@@ -184,13 +203,17 @@ func (r *Registry) add(name, description string, inputSchema any, gated bool, ca
 	return nil
 }
 
-func (r *Registry) addNativePrometheus(client *http.Client, baseURL string) error {
+func (r *Registry) addNativePrometheus(source NativeSource) error {
 	instant := map[string]any{
 		"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}},
 		"required": []string{"query"}, "additionalProperties": false,
 	}
-	if err := r.add("query_prometheus_instant", "Run an instant PromQL query.", instant, false, func(ctx context.Context, args map[string]any) (string, error) {
-		return queryPrometheus(ctx, client, baseURL+"/api/v1/query", args)
+	if err := r.add("query_"+source.Name+"_instant", "Run an instant PromQL query.", instant, false, func(ctx context.Context, args map[string]any) (string, error) {
+		values := url.Values{}
+		for key, value := range args {
+			values.Set(key, fmt.Sprint(value))
+		}
+		return doGet(ctx, source, "/api/v1/query", values)
 	}); err != nil {
 		return err
 	}
@@ -202,21 +225,39 @@ func (r *Registry) addNativePrometheus(client *http.Client, baseURL string) erro
 		},
 		"required": []string{"query", "start", "end", "step"}, "additionalProperties": false,
 	}
-	return r.add("query_prometheus_range", "Run a range PromQL query. start and end must be RFC3339 timestamps or unix seconds; relative expressions like now-6h are NOT accepted. step is a duration such as 5m.", rangeSchema, false, func(ctx context.Context, args map[string]any) (string, error) {
-		return queryPrometheus(ctx, client, baseURL+"/api/v1/query_range", args)
+	return r.add("query_"+source.Name+"_range", "Run a range PromQL query. start and end must be RFC3339 timestamps or unix seconds; relative expressions like now-6h are NOT accepted. step is a duration such as 5m.", rangeSchema, false, func(ctx context.Context, args map[string]any) (string, error) {
+		values := url.Values{}
+		for key, value := range args {
+			values.Set(key, fmt.Sprint(value))
+		}
+		return doGet(ctx, source, "/api/v1/query_range", values)
 	})
 }
 
-func queryPrometheus(ctx context.Context, client *http.Client, endpoint string, args map[string]any) (string, error) {
-	values := url.Values{}
-	for key, value := range args {
-		values.Set(key, fmt.Sprint(value))
+func (r *Registry) addNativeLoki(source NativeSource) error {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{"type": "string"}, "start": map[string]any{"type": "string"},
+			"end": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer"},
+		},
+		"required": []string{"query", "start", "end"}, "additionalProperties": false,
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+values.Encode(), nil)
+	return r.add("query_"+source.Name+"_logs", "Run a LogQL range query and return matching log lines, newest first. start and end must be RFC3339 timestamps or unix seconds; relative expressions like now-6h are NOT accepted. limit caps returned lines (default 100).", schema, false, func(ctx context.Context, args map[string]any) (string, error) {
+		values := url.Values{"direction": {"backward"}, "limit": {"100"}}
+		for key, value := range args {
+			values.Set(key, fmt.Sprint(value))
+		}
+		return doGet(ctx, source, "/loki/api/v1/query_range", values)
+	})
+}
+
+func doGet(ctx context.Context, source NativeSource, path string, values url.Values) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source.BaseURL+path+"?"+values.Encode(), nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.Do(req)
+	resp, err := source.Client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -226,7 +267,7 @@ func queryPrometheus(ctx context.Context, client *http.Client, endpoint string, 
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("prometheus: %s: %s", resp.Status, body)
+		return "", fmt.Errorf("%s: %s: %s", source.Name, resp.Status, body)
 	}
 	return string(body), nil
 }
