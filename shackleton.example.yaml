@@ -29,8 +29,10 @@ mcp_servers:
 prometheus:
   # Base URL of the Prometheus-compatible query API.
   url: https://prometheus.example.invalid
-  # Environment variable containing the complete Authorization header.
-  auth_header: {env: PROMETHEUS_AUTH_HEADER}
+  # Complete Authorization header. Prefer a file reference for short-TTL
+  # credentials: file-backed secrets are re-read on every request, so a
+  # rotation agent can renew the file under the running daemon.
+  auth_header: {file: /etc/shackleton/prometheus-auth}
 # MCP tool names that require operator approval.
 gated_tools: [run_host_command, run_kubectl_command]
 telegram:

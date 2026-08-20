@@ -53,6 +53,25 @@ func (s Secret) Value() string  { return s.value }
 func (s Secret) Ref() SecretRef { return s.ref }
 func (s Secret) IsSet() bool    { return s.ref.Env != "" || s.ref.File != "" }
 
+// Fresh re-reads a file-backed secret so short-TTL credentials re-rendered by
+// an external agent are picked up without a daemon restart. Env-backed and
+// unset refs return the startup value; so does a file that is momentarily
+// missing or empty mid-rotation.
+func (s Secret) Fresh() string {
+	if s.ref.File == "" {
+		return s.value
+	}
+	data, err := os.ReadFile(s.ref.File)
+	if err != nil {
+		return s.value
+	}
+	value := strings.TrimSpace(string(data))
+	if value == "" {
+		return s.value
+	}
+	return value
+}
+
 type Duration struct {
 	value time.Duration
 	err   error

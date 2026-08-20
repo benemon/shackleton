@@ -55,16 +55,17 @@ func main() {
 	}
 }
 
-// headerRoundTripper injects a static header set into every request — the
-// auth mechanism for gated MCP servers and the metrics endpoint.
+// headerRoundTripper injects headers into every request — the auth mechanism
+// for gated MCP servers and the metrics endpoint. Values are fetched per
+// request because file-backed secrets rotate under a running daemon.
 type headerRoundTripper struct {
 	base    http.RoundTripper
-	headers map[string]string
+	headers map[string]func() string
 }
 
 func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	for k, v := range h.headers {
-		req.Header.Set(k, v)
+		req.Header.Set(k, v())
 	}
 	return h.base.RoundTrip(req)
 }
@@ -433,8 +434,8 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFa
 	for _, configured := range cfg.MCPServers {
 		servers = append(servers, agent.MCPServer{Name: configured.Name, Connect: func(connectCtx context.Context) (agent.MCPSession, error) {
 			var transport http.RoundTripper = http.DefaultTransport
-			if auth := configured.AuthHeader.Value(); auth != "" {
-				transport = &headerRoundTripper{base: http.DefaultTransport, headers: map[string]string{"Authorization": auth}}
+			if configured.AuthHeader.IsSet() {
+				transport = &headerRoundTripper{base: http.DefaultTransport, headers: map[string]func() string{"Authorization": configured.AuthHeader.Fresh}}
 			}
 			client := mcp.NewClient(&mcp.Implementation{Name: "shackleton", Version: "0.0.1"}, nil)
 			return client.Connect(connectCtx, &mcp.StreamableClientTransport{
@@ -444,7 +445,7 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFa
 		}})
 	}
 	promClient := &http.Client{Transport: &headerRoundTripper{
-		base: http.DefaultTransport, headers: map[string]string{"Authorization": cfg.Prometheus.AuthHeader.Value()},
+		base: http.DefaultTransport, headers: map[string]func() string{"Authorization": cfg.Prometheus.AuthHeader.Fresh},
 	}, Timeout: cfg.Agent.CallTimeout.Duration()}
 	registry, err := agent.NewRegistry(ctx, servers, gatedTools, promClient, cfg.Prometheus.URL)
 	if err != nil {

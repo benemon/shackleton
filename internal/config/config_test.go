@@ -125,6 +125,49 @@ func TestLoadResolvesEnvironmentAndFileSecretsFromTheirSources(t *testing.T) {
 	}
 }
 
+func TestFreshRereadsFileSecretsAndKeepsEnvSecretsStatic(t *testing.T) {
+	secretPath := filepath.Join(t.TempDir(), "prom-auth")
+	if err := os.WriteFile(secretPath, []byte("Bearer first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := validConfig(t, "")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Replace(string(data), "auth_header: {env: CONFIG_PROM_AUTH}",
+		fmt.Sprintf("auth_header: {file: %q}", secretPath), 1)
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Prometheus.AuthHeader.Fresh(); got != "Bearer first" {
+		t.Fatalf("initial fresh value = %q", got)
+	}
+	if err := os.WriteFile(secretPath, []byte("Bearer rotated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Prometheus.AuthHeader.Fresh(); got != "Bearer rotated" {
+		t.Fatalf("rotated fresh value = %q", got)
+	}
+	if got := cfg.Prometheus.AuthHeader.Value(); got != "Bearer first" {
+		t.Fatalf("cached value changed to %q", got)
+	}
+	if err := os.WriteFile(secretPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Prometheus.AuthHeader.Fresh(); got != "Bearer first" {
+		t.Fatalf("empty file should fall back to startup value, got %q", got)
+	}
+	t.Setenv("CONFIG_API_KEY", "changed-after-load")
+	if got := cfg.Model.APIKey.Fresh(); got != "environment-secret" {
+		t.Fatalf("env-backed fresh value = %q", got)
+	}
+}
+
 func TestAPITokenIsOptionalAndResolvedWhenSet(t *testing.T) {
 	cfg, err := Load(validConfig(t, ""))
 	if err != nil {
