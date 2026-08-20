@@ -144,6 +144,7 @@ type TLS struct {
 type Agent struct {
 	Prompt               string   `yaml:"prompt,omitempty"`
 	MaxRounds            int      `yaml:"max_rounds"`
+	MaxToolResultChars   int      `yaml:"max_tool_result_chars,omitempty"`
 	CallTimeout          Duration `yaml:"call_timeout"`
 	InvestigationTimeout Duration `yaml:"investigation_timeout"`
 }
@@ -270,6 +271,12 @@ func (c *Config) applyDefaultsAndValidate() error {
 	}
 	if c.Agent.MaxRounds < 1 {
 		return fmt.Errorf("agent.max_rounds must be at least 1")
+	}
+	if c.Agent.MaxToolResultChars == 0 {
+		c.Agent.MaxToolResultChars = 30000
+	}
+	if c.Agent.MaxToolResultChars < 1 {
+		return fmt.Errorf("agent.max_tool_result_chars must be at least 1")
 	}
 	if c.Agent.CallTimeout.err != nil {
 		return fmt.Errorf("agent.call_timeout: %w", c.Agent.CallTimeout.err)

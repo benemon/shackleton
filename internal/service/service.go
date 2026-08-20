@@ -89,6 +89,7 @@ type ChannelView struct {
 
 type AgentView struct {
 	MaxRounds            int    `json:"max_rounds"`
+	MaxToolResultChars   int    `json:"max_tool_result_chars"`
 	CallTimeout          string `json:"call_timeout"`
 	InvestigationTimeout string `json:"investigation_timeout"`
 }
@@ -379,7 +380,7 @@ func (s *Service) ConfigView() ConfigView {
 		MetricsSources: metrics, LogsSources: logs,
 		Notifications: channelViews(cfg.Notifications), Approvals: channelViews(cfg.Approvals),
 		GatedTools: append([]string{}, cfg.GatedTools...),
-		Agent: AgentView{MaxRounds: cfg.Agent.MaxRounds,
+		Agent: AgentView{MaxRounds: cfg.Agent.MaxRounds, MaxToolResultChars: cfg.Agent.MaxToolResultChars,
 			CallTimeout: cfg.Agent.CallTimeout.Duration().String(), InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration().String()},
 		APIToken: cfg.APIToken.Ref(),
 	}

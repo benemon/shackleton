@@ -113,6 +113,37 @@ func TestSchemaValidationAndMalformedRecovery(t *testing.T) {
 	}
 }
 
+func TestOversizedToolResultIsTruncatedWithMarker(t *testing.T) {
+	r := &Registry{tools: make(map[string]toolEntry)}
+	huge := strings.Repeat("x", 500)
+	if err := r.add("big", "test", map[string]any{"type": "object"}, false,
+		func(context.Context, map[string]any) (string, error) { return huge, nil }); err != nil {
+		t.Fatal(err)
+	}
+	index := 0
+	runner := Runner{
+		Tools: r, MaxToolResult: 100,
+		Complete: func(_ context.Context, history []openai.ChatCompletionMessageParamUnion, _ []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+			index++
+			if index == 1 {
+				return ModelMessage{ToolCalls: []ModelToolCall{{Name: "big", Arguments: `{}`, ID: "1"}}}, nil
+			}
+			text := history[len(history)-1].OfTool.Content.OfString.Value
+			if !strings.HasPrefix(text, strings.Repeat("x", 100)+"\n…[truncated: the result was 500 characters, showing the first 100.") {
+				t.Fatalf("truncated tool message = %.160q", text)
+			}
+			if strings.Contains(text[100:], "x") {
+				t.Fatalf("payload leaked past the cap: %.200q", text)
+			}
+			return ModelMessage{Content: "done"}, nil
+		},
+	}
+	metrics, err := runner.Run(context.Background(), "question", "")
+	if err != nil || !metrics.Completed {
+		t.Fatalf("run failed: metrics=%+v err=%v", metrics, err)
+	}
+}
+
 func TestRoundCapTerminatesToolSequence(t *testing.T) {
 	called := 0
 	runner := Runner{

@@ -492,7 +492,8 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFa
 	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
 		return &agent.Runner{
 			Complete: complete, Tools: registry, Approver: approver, Events: events,
-			Prompt: prompt, MaxRounds: cfg.Agent.MaxRounds, CallTimeout: cfg.Agent.CallTimeout.Duration(),
+			Prompt: prompt, MaxRounds: cfg.Agent.MaxRounds, MaxToolResult: cfg.Agent.MaxToolResultChars,
+			CallTimeout:          cfg.Agent.CallTimeout.Duration(),
 			InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration(),
 		}
 	}, closeSessions, nil

@@ -96,6 +96,7 @@ type Runner struct {
 	Prompt               string
 	MaxRounds            int
 	MaxMalformedRetries  int
+	MaxToolResult        int
 	CallTimeout          time.Duration
 	InvestigationTimeout time.Duration
 	Events               EventSink
@@ -128,6 +129,10 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 	maxMalformed := r.MaxMalformedRetries
 	if maxMalformed == 0 {
 		maxMalformed = 3
+	}
+	maxToolResult := r.MaxToolResult
+	if maxToolResult == 0 {
+		maxToolResult = 30000
 	}
 	callTimeout := r.CallTimeout
 	if callTimeout == 0 {
@@ -197,7 +202,15 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 				metrics.Recovered += malformed[raw.Name]
 				delete(malformed, raw.Name)
 			}
-			messages = append(messages, openai.ToolMessage(result.text, raw.ID))
+			// An unbounded result (a broad PromQL query can return megabytes)
+			// would blow the model's context window and kill the whole
+			// investigation; cap it and tell the model to narrow.
+			text := result.text
+			if runes := []rune(text); len(runes) > maxToolResult {
+				text = string(runes[:maxToolResult]) +
+					fmt.Sprintf("\n…[truncated: the result was %d characters, showing the first %d. Narrow the query.]", len(runes), maxToolResult)
+			}
+			messages = append(messages, openai.ToolMessage(text, raw.ID))
 		}
 	}
 	metrics.Answer = "round limit reached"

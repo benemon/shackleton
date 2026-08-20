@@ -600,9 +600,11 @@ components:
         agent:
           type: object
           additionalProperties: false
-          required: [max_rounds, call_timeout, investigation_timeout]
+          required: [max_rounds, max_tool_result_chars, call_timeout, investigation_timeout]
           properties:
             max_rounds:
+              type: integer
+            max_tool_result_chars:
               type: integer
             call_timeout:
               type: string

@@ -82,6 +82,10 @@ agent:
     via node-exporter and is keyed by the instance label.
   # Maximum model completion rounds per investigation.
   max_rounds: 8
+  # Cap on a single tool result entering the model conversation; larger
+  # results are truncated with a marker asking the model to narrow the
+  # query. Size to the model's context window.
+  max_tool_result_chars: 30000
   # Timeout applied to each individual tool call.
   call_timeout: 30s
   # Wall-clock limit for a complete investigation.
