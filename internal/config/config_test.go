@@ -209,6 +209,24 @@ func TestLoadParsesDurations(t *testing.T) {
 	}
 }
 
+func TestLoadValidatesTLS(t *testing.T) {
+	cfg, err := Load(validConfig(t, "tls:\n  cert_file: /etc/shackleton/tls.crt\n  key_file: /etc/shackleton/tls.key\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TLS.CertFile != "/etc/shackleton/tls.crt" || cfg.TLS.KeyFile != "/etc/shackleton/tls.key" {
+		t.Fatalf("tls = %+v", cfg.TLS)
+	}
+	for _, partial := range []string{
+		"tls:\n  cert_file: /etc/shackleton/tls.crt\n",
+		"tls:\n  key_file: /etc/shackleton/tls.key\n",
+	} {
+		if _, err := Load(validConfig(t, partial)); err == nil || !strings.Contains(err.Error(), "tls requires both cert_file and key_file") {
+			t.Fatalf("partial tls error = %v", err)
+		}
+	}
+}
+
 func TestLoadValidatesSweeps(t *testing.T) {
 	good := "sweeps:\n  - name: node-fs\n    schedule: \"0 */4 * * *\"\n    question: check filesystems\n"
 	cfg, err := Load(validConfig(t, good))

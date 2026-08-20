@@ -353,7 +353,13 @@ func runServe(ctx context.Context, args []string) error {
 	root.Handle("/", ui.Handler())
 	server := &http.Server{Addr: cfg.Listen, Handler: root}
 	serverErrors := make(chan error, 1)
-	go func() { serverErrors <- server.ListenAndServe() }()
+	go func() {
+		if cfg.TLS.CertFile != "" {
+			serverErrors <- server.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		} else {
+			serverErrors <- server.ListenAndServe()
+		}
+	}()
 
 	var serveErr error
 	select {

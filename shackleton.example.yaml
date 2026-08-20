@@ -1,5 +1,11 @@
 # Address for the API listener.
 listen: "127.0.0.1:8420"
+# Optional TLS for the listener; both files or neither.
+tls:
+  # PEM-encoded server certificate (leaf first, then intermediates).
+  cert_file: /etc/shackleton/tls.crt
+  # PEM-encoded private key.
+  key_file: /etc/shackleton/tls.key
 # Environment variable containing the API bearer token.
 api_token: {env: SHACKLETON_API_TOKEN}
 # Directory containing investigation audit state.

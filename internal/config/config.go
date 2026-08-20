@@ -95,6 +95,11 @@ type Telegram struct {
 	EnvFile string `yaml:"env_file,omitempty"`
 }
 
+type TLS struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+}
+
 type Agent struct {
 	MaxRounds            int      `yaml:"max_rounds"`
 	CallTimeout          Duration `yaml:"call_timeout"`
@@ -112,6 +117,7 @@ func (s Sweep) Parsed() cron.Schedule { return s.schedule }
 
 type Config struct {
 	Listen     string      `yaml:"listen"`
+	TLS        TLS         `yaml:"tls,omitempty"`
 	StateDir   string      `yaml:"state_dir"`
 	EnvFiles   []string    `yaml:"env_files,omitempty"`
 	Model      Model       `yaml:"model"`
@@ -163,6 +169,9 @@ func (c *Config) applyDefaultsAndValidate() error {
 		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
 			return fmt.Errorf("listen: invalid port %q", port)
 		}
+	}
+	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {
+		return fmt.Errorf("tls requires both cert_file and key_file")
 	}
 	if c.Model.BaseURL == "" {
 		return fmt.Errorf("model.base_url is required")
