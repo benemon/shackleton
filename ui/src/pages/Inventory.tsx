@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, Card, CardBody, CardTitle, PageSection, Spinner, Title } from '@patternfly/react-core';
+import { Alert, Card, CardBody, CardTitle, Label, PageSection, Spinner, Title } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import { api, type Inventory as InventoryView } from '../api';
 
@@ -41,6 +41,7 @@ export function Inventory() {
                   <Th>Hostname</Th>
                   <Th>Aliases</Th>
                   <Th>Connection</Th>
+                  <Th>Status</Th>
                 </Tr>
               </Thead>
               <Tbody>
@@ -50,6 +51,13 @@ export function Inventory() {
                     <Td>{host.hostname ?? '—'}</Td>
                     <Td>{host.aliases !== undefined && host.aliases.length > 0 ? host.aliases.join(', ') : '—'}</Td>
                     <Td>{host.connection}</Td>
+                    <Td>
+                      {host.status === 'draft' ? (
+                        <Label color="grey">draft{host.source !== undefined ? ` · ${host.source}` : ''}</Label>
+                      ) : (
+                        <Label color="green">declared</Label>
+                      )}
+                    </Td>
                   </Tr>
                 ))}
               </Tbody>

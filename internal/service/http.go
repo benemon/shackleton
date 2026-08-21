@@ -276,7 +276,12 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 func (s *Service) getInventory(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.InventoryView())
+	view, err := s.InventoryView()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 func (s *Service) listKB(w http.ResponseWriter, r *http.Request) {

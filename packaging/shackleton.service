@@ -1,4 +1,5 @@
-# ReadWritePaths must match the config's state_dir.
+# ReadWritePaths must match the config's state_dir and inventory_dir —
+# discovery writes drafts.yaml into the inventory directory.
 [Unit]
 Description=Shackleton AI ops investigation daemon
 After=network-online.target
@@ -11,7 +12,7 @@ RestartSec=10
 NoNewPrivileges=yes
 ProtectHome=read-only
 ProtectSystem=full
-ReadWritePaths=/var/lib/shackleton
+ReadWritePaths=/var/lib/shackleton -/etc/shackleton/inventory
 PrivateTmp=yes
 
 [Install]

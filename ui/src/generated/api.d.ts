@@ -417,6 +417,11 @@ export interface components {
                 aliases?: string[];
                 /** @enum {string} */
                 connection: "ssh" | "winrm";
+                /** @enum {string} */
+                status?: "draft" | "approved";
+                source?: string;
+                /** Format: date-time */
+                first_seen?: string;
             }[];
             clusters: {
                 name: string;

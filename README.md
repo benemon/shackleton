@@ -68,5 +68,7 @@ signal that motivated them; resolutions accrue as knowledge-base articles that
 inform recurrences once approved. The estate itself is declared: an
 operator-owned inventory of hosts and clusters (`inventory.example.yaml`)
 feeds the system prompt as generated facts and validates the target of every
-gated host action before an approval is even requested. Ahead:
+gated host action before an approval is even requested — and the daemon
+proposes hosts it sees in the metrics that the operator hasn't declared, as
+inert drafts that gain no power until a human approves them. Ahead:
 knowledge-driven investigation shortcuts and multi-model review.

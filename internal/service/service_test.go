@@ -19,7 +19,6 @@ import (
 
 	"github.com/benemon/shackleton/internal/agent"
 	"github.com/benemon/shackleton/internal/config"
-	"github.com/benemon/shackleton/internal/inventory"
 	"github.com/benemon/shackleton/internal/kb"
 	"github.com/benemon/shackleton/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -285,12 +284,9 @@ clusters:
 	if err := os.WriteFile(filepath.Join(dir, "lab.yaml"), []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	inv, err := inventory.Load(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := New(context.Background(), nil, nil, nil)
-	service.Inventory = inv
+	cfg := testConfig(t)
+	cfg.InventoryDir = dir
+	service := New(context.Background(), nil, cfg, nil)
 	request := httptest.NewRequest(http.MethodGet, "/v1/inventory", nil)
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()
@@ -318,6 +314,17 @@ clusters:
 	}
 	if len(got.Clusters) != 1 || got.Clusters[0].Type != "openshift" {
 		t.Fatalf("clusters = %+v", got.Clusters)
+	}
+
+	// The view reads the directory fresh: a draft written after startup
+	// appears without a restart.
+	if err := os.WriteFile(filepath.Join(dir, "drafts.yaml"), []byte("hosts:\n  - name: node1\n    status: draft\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	NewHTTP(service, "token").ServeHTTP(response, request.Clone(context.Background()))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"draft"`) {
+		t.Fatalf("draft not visible in fresh view: %d %s", response.Code, response.Body.String())
 	}
 
 	empty := New(context.Background(), nil, nil, nil)

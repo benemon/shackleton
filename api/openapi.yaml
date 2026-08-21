@@ -697,6 +697,14 @@ components:
               connection:
                 type: string
                 enum: [ssh, winrm]
+              status:
+                type: string
+                enum: [draft, approved]
+              source:
+                type: string
+              first_seen:
+                type: string
+                format: date-time
         clusters:
           type: array
           items:

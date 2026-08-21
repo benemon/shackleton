@@ -674,11 +674,14 @@ func (s *Service) ConfigView() ConfigView {
 	}
 }
 
-func (s *Service) InventoryView() *inventory.Inventory {
-	if s.Inventory == nil {
-		return &inventory.Inventory{Hosts: []inventory.Host{}, Clusters: []inventory.Cluster{}}
+// InventoryView reads the inventory directory fresh so operator edits and
+// discovery drafts appear without a restart; the startup snapshot behind
+// prompt assembly and gating (s.Inventory) is unaffected.
+func (s *Service) InventoryView() (*inventory.Inventory, error) {
+	if s.config == nil || s.config.InventoryDir == "" {
+		return &inventory.Inventory{Hosts: []inventory.Host{}, Clusters: []inventory.Cluster{}}, nil
 	}
-	return s.Inventory
+	return inventory.Load(s.config.InventoryDir)
 }
 
 func (s *Service) KBList() ([]kb.FrontMatter, error) {

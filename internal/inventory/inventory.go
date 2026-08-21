@@ -24,7 +24,17 @@ type Host struct {
 	Hostname   string   `yaml:"hostname,omitempty" json:"hostname,omitempty"`
 	Aliases    []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	Connection string   `yaml:"connection,omitempty" json:"connection"`
+	// Status draft marks a machine-proposed member: listed, but inert —
+	// excluded from identity resolution, the prompt environment, and
+	// gating until an operator approves it (flip the status or move the
+	// entry to an operator file). Source and FirstSeen are machine-written
+	// discovery metadata.
+	Status    string `yaml:"status,omitempty" json:"status,omitempty"`
+	Source    string `yaml:"source,omitempty" json:"source,omitempty"`
+	FirstSeen string `yaml:"first_seen,omitempty" json:"first_seen,omitempty"`
 }
+
+func (h Host) draft() bool { return h.Status == "draft" }
 
 // connectionTarget is the address executors are given: hostname when it
 // differs from the friendly name, the name otherwise.
@@ -86,16 +96,26 @@ func Load(dir string) (*Inventory, error) {
 			if host.Name == "" {
 				return nil, fmt.Errorf("%s.name is required", prefix)
 			}
-			if hostNames[host.Name] {
-				return nil, fmt.Errorf("%s.name %q is duplicated", prefix, host.Name)
-			}
-			hostNames[host.Name] = true
 			if host.Connection == "" {
 				host.Connection = "ssh"
 			}
 			if host.Connection != "ssh" && host.Connection != "winrm" {
 				return nil, fmt.Errorf("%s.connection %q is not supported (want ssh or winrm)", prefix, host.Connection)
 			}
+			if host.Status != "" && host.Status != "draft" && host.Status != "approved" {
+				return nil, fmt.Errorf("%s.status %q is not supported (want draft or approved)", prefix, host.Status)
+			}
+			// Drafts stay out of the identity and uniqueness maps: they are
+			// proposals, and a proposal must never break startup when the
+			// operator declares the same host before discovery self-heals.
+			if host.draft() {
+				inv.Hosts = append(inv.Hosts, *host)
+				continue
+			}
+			if hostNames[host.Name] {
+				return nil, fmt.Errorf("%s.name %q is duplicated", prefix, host.Name)
+			}
+			hostNames[host.Name] = true
 			identities := append([]string{host.Name}, host.Aliases...)
 			if host.Hostname != "" {
 				identities = append(identities, host.Hostname)
@@ -144,10 +164,14 @@ func (inv *Inventory) ResolveTarget(target string) (string, bool) {
 	return "", false
 }
 
-// KnownTargets lists connection targets for pre-flight error messages.
+// KnownTargets lists connection targets for pre-flight error messages;
+// drafts are not targets.
 func (inv *Inventory) KnownTargets() []string {
 	names := make([]string, 0, len(inv.Hosts))
 	for _, host := range inv.Hosts {
+		if host.draft() {
+			continue
+		}
 		names = append(names, host.connectionTarget())
 	}
 	return names
@@ -156,14 +180,22 @@ func (inv *Inventory) KnownTargets() []string {
 // Environment renders the inventory as fact lines for the system prompt and
 // KB articles; judgement prose stays in the operator preamble.
 func (inv *Inventory) Environment() string {
-	if len(inv.Hosts) == 0 && len(inv.Clusters) == 0 {
+	// Drafts are machine proposals no human has vouched for; only approved
+	// members feed the model's context (KB draft/approved parallel).
+	actionable := make([]Host, 0, len(inv.Hosts))
+	for _, host := range inv.Hosts {
+		if !host.draft() {
+			actionable = append(actionable, host)
+		}
+	}
+	if len(actionable) == 0 && len(inv.Clusters) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("Inventory:")
-	if len(inv.Hosts) > 0 {
+	if len(actionable) > 0 {
 		b.WriteString("\nHosts (a gated host command may target any identity listed; nothing else):")
-		for _, host := range inv.Hosts {
+		for _, host := range actionable {
 			b.WriteString("\n- " + host.Name)
 			var detail []string
 			if host.Connection != "ssh" {

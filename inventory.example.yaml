@@ -2,6 +2,14 @@
 # inventory_dir; they are merged in file-name order. The inventory is a
 # security boundary: gated host commands are validated against the declared
 # hosts before any approval is requested, and it never holds credentials.
+#
+# Discovery: once at least one host is declared, the daemon periodically
+# queries each metrics source for node-exporter hosts (node_uname_info) and
+# proposes unknown ones as drafts in a machine-owned drafts.yaml in this
+# directory. Drafts are inert — listed in /v1/inventory and the console, but
+# excluded from the prompt and from gating — until approved: set
+# status: approved in place, or move the entry into a file like this one.
+# Prompt and gating pick the approval up at the next daemon restart.
 hosts:
   # Canonical connection target. Alert and metric identities matching name,
   # hostname, or any alias (with or without a :port suffix) resolve here.

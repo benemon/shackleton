@@ -206,6 +206,31 @@ func runServe(ctx context.Context, args []string) error {
 	if len(cfg.Sweeps) > 0 {
 		sweep.Run(investigationCtx, cfg.Sweeps, core, notifier)
 	}
+	if len(cfg.MetricsSources) > 0 {
+		discoverySources := make([]inventory.Source, 0, len(cfg.MetricsSources))
+		for _, source := range cfg.MetricsSources {
+			var transport http.RoundTripper = http.DefaultTransport
+			if source.AuthHeader.IsSet() {
+				transport = &headerRoundTripper{base: http.DefaultTransport, headers: map[string]func() string{"Authorization": source.AuthHeader.Fresh}}
+			}
+			discoverySources = append(discoverySources, inventory.Source{Name: source.Name, BaseURL: strings.TrimRight(source.URL, "/"),
+				Client: &http.Client{Transport: transport, Timeout: cfg.Agent.CallTimeout.Duration()}})
+		}
+		inventory.Run(investigationCtx, cfg.InventoryDir, discoverySources, func(draft inventory.Host) {
+			text := fmt.Sprintf("Inventory discovery: new draft host %s", draft.Name)
+			if draft.Hostname != "" {
+				text += " (" + draft.Hostname + ")"
+			}
+			text += " seen by " + draft.Source + ". It stays inert until approved in the inventory."
+			if notifier == nil {
+				fmt.Fprintln(os.Stderr, text)
+				return
+			}
+			if err := notifier.Send(investigationCtx, text); err != nil {
+				fmt.Fprintf(os.Stderr, "inventory discovery: notify: %v\n", err)
+			}
+		})
+	}
 	api := service.NewHTTP(core, cfg.APIToken.Value())
 	root := http.NewServeMux()
 	root.Handle("/v1/", api)
