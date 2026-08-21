@@ -4,6 +4,27 @@ A self-hosted, **infra-agnostic** AI ops/investigation agent that runs on a
 **local model** and treats bare metal, traditional VMs, cloud instances, and
 metrics as first-class citizens — not a Kubernetes afterthought.
 
+The core binary gives you a baseline experience out of the box; the more
+capability you inject through its ports, the more complete the intelligent
+SRE experience becomes:
+
+1. **Observe** — the binary, a config file, any OpenAI-compatible model, and
+   a Prometheus-compatible endpoint. That alone buys investigations,
+   scheduled sweeps, structured verdicts, a full audit trail, and the
+   embedded console.
+2. **Notify** — add a notification channel and verdicts, answers, and
+   outcomes reach you; ask questions from your pocket.
+3. **Act** — add gated MCP executors and a privileged approvals channel:
+   remediation proposals with a human tap on every mutation, and honest
+   settlement of every decision.
+4. **Remember** — verified resolutions become knowledge-base articles, one
+   per symptom; approve an article and it guides future investigations of
+   the same symptom.
+5. **Scale** — more metrics and log sources, more channels, more tools; the
+   same core, progressively more capable.
+
+Every rung is optional, additive, and declared in one config file.
+
 ## Why
 
 Existing open-source agentic ops tooling (HolmesGPT, k8sgpt, kagent, kubectl-ai)
@@ -16,9 +37,9 @@ it is a cluster, that leaves a gap. Shackleton fills it, lab-benefit-first.
 
 ## Shape
 
-- **Language:** Go — single static, dependency-free binary; cross-compiles to any
-  target; matches the infra ecosystem. (Distribution beats a Python venv even in
-  one's own lab, and doubly so for air-gapped/heterogeneous targets.)
+- **Language:** Go — the core is a single static binary that cross-compiles to
+  any target; the system composes with the services you point it at (model
+  endpoint, metrics, MCP tools). No runtime dependency management, ever.
 - **Model:** any OpenAI-compatible endpoint (e.g. litellm → a local Qwen). No
   mandatory cloud inference.
 - **Tools:** MCP-native — host/SSH diagnostics, Prometheus, gated executors are
@@ -34,7 +55,9 @@ it is a cluster, that leaves a gap. Shackleton fills it, lab-benefit-first.
 
 ## Status
 
-In service against its first estate. The core loop — scheduled sweeps,
-reactive Q&A, approval-gated remediation, audit trail, API + embedded console —
-is running; the pluggable-capability surfaces (tool providers, metrics
-sources, notification channels) are still settling.
+In service against its first estate. The closed loop is running: alert triage,
+scheduled sweeps, and Q&A end in structured verdicts; consequential outcomes
+notify the operator's channels; approved actions are verified against the
+signal that motivated them; resolutions accrue as knowledge-base articles that
+inform recurrences once approved. Ahead: a declarative fleet inventory,
+knowledge-driven investigation shortcuts, and multi-model review.
