@@ -182,6 +182,18 @@ paths:
                 type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/inventory:
+    get:
+      operationId: getInventory
+      responses:
+        '200':
+          description: Declared estate inventory
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Inventory'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /v1/kb:
     get:
       operationId: listKBArticles
@@ -660,16 +672,55 @@ components:
                     type: string
             verified:
               type: string
+    Inventory:
+      type: object
+      additionalProperties: false
+      required: [hosts, clusters]
+      properties:
+        hosts:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, connection]
+            properties:
+              name:
+                type: string
+              hostname:
+                type: string
+              aliases:
+                type: array
+                items:
+                  type: string
+              connection:
+                type: string
+                enum: [ssh, winrm]
+        clusters:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, api, type]
+            properties:
+              name:
+                type: string
+              api:
+                type: string
+              type:
+                type: string
+                enum: [kubernetes, openshift]
     ConfigView:
       type: object
       additionalProperties: false
-      required: [listen, state_dir, kb_dir, env_files, model, mcp_servers, metrics_sources, logs_sources, gated_tools, notifications, approvals, agent, sweeps, api_token]
+      required: [listen, state_dir, kb_dir, inventory_dir, env_files, model, mcp_servers, metrics_sources, logs_sources, gated_tools, notifications, approvals, agent, sweeps, api_token]
       properties:
         listen:
           type: string
         state_dir:
           type: string
         kb_dir:
+          type: string
+        inventory_dir:
           type: string
         env_files:
           type: array

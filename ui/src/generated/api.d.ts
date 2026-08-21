@@ -154,6 +154,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/inventory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getInventory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kb": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listKBArticles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kb/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        get: operations["getKBArticle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/config": {
         parameters: {
             query?: never;
@@ -244,7 +294,16 @@ export interface components {
         };
         CompletedPayload: {
             answer: string;
+            verdict?: components["schemas"]["Verdict"];
             metrics: components["schemas"]["Metrics"];
+        };
+        Verdict: {
+            /** @enum {string} */
+            verdict: "healthy" | "attention" | "action";
+            summary: string;
+            evidence: string[];
+            /** @enum {string} */
+            resolution?: "cleared" | "persisting";
         };
         FailedPayload: {
             reason: string;
@@ -313,9 +372,63 @@ export interface components {
         } | {
             file: string;
         };
+        ChannelView: {
+            name: string;
+            type: string;
+        };
+        SourceView: {
+            name: string;
+            type: string;
+            url: string;
+            auth_header?: components["schemas"]["SecretRef"];
+        };
+        KBArticleMeta: {
+            slug: string;
+            title: string;
+            /** @enum {string} */
+            status: "draft" | "approved";
+            nominated?: boolean;
+            symptom: {
+                trigger: string;
+                alertname?: string;
+                fingerprints?: string[];
+                sweep?: string;
+            };
+            verdict: string;
+            occurrences: {
+                investigation: string;
+                /** Format: date-time */
+                at: string;
+                verified?: string;
+            }[];
+            resolution: {
+                actions: {
+                    human: string;
+                    outcome: string;
+                }[];
+                verified: string;
+            };
+        };
+        Inventory: {
+            hosts: {
+                name: string;
+                hostname?: string;
+                aliases?: string[];
+                /** @enum {string} */
+                connection: "ssh" | "winrm";
+            }[];
+            clusters: {
+                name: string;
+                api: string;
+                /** @enum {string} */
+                type: "kubernetes" | "openshift";
+            }[];
+        };
         ConfigView: {
             listen: string;
             state_dir: string;
+            kb_dir: string;
+            inventory_dir: string;
             env_files: string[];
             model: {
                 base_url: string;
@@ -327,16 +440,14 @@ export interface components {
                 url: string;
                 auth_header?: components["schemas"]["SecretRef"];
             }[];
-            prometheus: {
-                url: string;
-                auth_header: components["schemas"]["SecretRef"];
-            };
+            metrics_sources: components["schemas"]["SourceView"][];
+            logs_sources: components["schemas"]["SourceView"][];
             gated_tools: string[];
-            telegram: {
-                env_file: string;
-            };
+            notifications: components["schemas"]["ChannelView"][];
+            approvals: components["schemas"]["ChannelView"][];
             agent: {
                 max_rounds: number;
+                max_tool_result_chars: number;
                 call_timeout: string;
                 investigation_timeout: string;
             };
@@ -651,6 +762,74 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    getInventory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Declared estate inventory */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Inventory"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    listKBArticles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Knowledge-base article front-matter */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KBArticleMeta"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            500: components["responses"]["InternalError"];
+        };
+    };
+    getKBArticle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Raw article markdown with YAML front-matter */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/markdown": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["InternalError"];
         };
     };
     getConfig: {

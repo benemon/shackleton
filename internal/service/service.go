@@ -17,6 +17,7 @@ import (
 
 	"github.com/benemon/shackleton/internal/agent"
 	"github.com/benemon/shackleton/internal/config"
+	"github.com/benemon/shackleton/internal/inventory"
 	"github.com/benemon/shackleton/internal/kb"
 	"github.com/benemon/shackleton/internal/store"
 )
@@ -48,6 +49,7 @@ type ConfigView struct {
 	Listen         string           `json:"listen"`
 	StateDir       string           `json:"state_dir"`
 	KBDir          string           `json:"kb_dir"`
+	InventoryDir   string           `json:"inventory_dir"`
 	EnvFiles       []string         `json:"env_files"`
 	Model          ModelView        `json:"model"`
 	MCPServers     []MCPServerView  `json:"mcp_servers"`
@@ -119,7 +121,10 @@ type Service struct {
 	// KB, when set, receives a resolution record for every completed
 	// investigation with an attention/action verdict or an approved action.
 	KB *kb.Store
-	wg sync.WaitGroup
+	// Inventory, when set, backs the /v1/inventory projection and the
+	// environment facts recorded into KB articles.
+	Inventory *inventory.Inventory
+	wg        sync.WaitGroup
 
 	mu           sync.Mutex
 	pending      map[string]*pendingApproval
@@ -218,7 +223,7 @@ func (s *Service) recordResolution(id, question, trigger string, verdict *store.
 	if len(actions) == 0 && (verdict == nil || verdict.Verdict == "healthy") {
 		return
 	}
-	article := buildArticle(id, question, trigger, verdict, answer, s.agentPrompt(), events, actions)
+	article := buildArticle(id, question, trigger, verdict, answer, s.environmentText(), events, actions)
 	front, err := s.KB.Record(article)
 	if err != nil {
 		log.Printf("kb: record %s: %v", article.Slug, err)
@@ -238,11 +243,17 @@ func (s *Service) recordResolution(id, question, trigger string, verdict *store.
 	}
 }
 
-func (s *Service) agentPrompt() string {
-	if s.config == nil {
-		return ""
+func (s *Service) environmentText() string {
+	var parts []string
+	if s.config != nil && s.config.Agent.Prompt != "" {
+		parts = append(parts, s.config.Agent.Prompt)
 	}
-	return s.config.Agent.Prompt
+	if s.Inventory != nil {
+		if env := s.Inventory.Environment(); env != "" {
+			parts = append(parts, env)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func approvedActions(events []store.Event) []kb.Action {
@@ -652,7 +663,7 @@ func (s *Service) ConfigView() ConfigView {
 		return views
 	}
 	return ConfigView{
-		Listen: cfg.Listen, StateDir: cfg.StateDir, KBDir: cfg.KBDir, EnvFiles: append([]string{}, cfg.EnvFiles...), Sweeps: sweeps,
+		Listen: cfg.Listen, StateDir: cfg.StateDir, KBDir: cfg.KBDir, InventoryDir: cfg.InventoryDir, EnvFiles: append([]string{}, cfg.EnvFiles...), Sweeps: sweeps,
 		Model:          ModelView{BaseURL: cfg.Model.BaseURL, Name: cfg.Model.Name, APIKey: cfg.Model.APIKey.Ref()},
 		MCPServers:     servers,
 		MetricsSources: metrics, LogsSources: logs,
@@ -662,6 +673,13 @@ func (s *Service) ConfigView() ConfigView {
 			CallTimeout: cfg.Agent.CallTimeout.Duration().String(), InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration().String()},
 		APIToken: cfg.APIToken.Ref(),
 	}
+}
+
+func (s *Service) InventoryView() *inventory.Inventory {
+	if s.Inventory == nil {
+		return &inventory.Inventory{Hosts: []inventory.Host{}, Clusters: []inventory.Cluster{}}
+	}
+	return s.Inventory
 }
 
 func (s *Service) KBList() ([]kb.FrontMatter, error) {

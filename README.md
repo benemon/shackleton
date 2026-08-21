@@ -59,5 +59,8 @@ In service against its first estate. The closed loop is running: alert triage,
 scheduled sweeps, and Q&A end in structured verdicts; consequential outcomes
 notify the operator's channels; approved actions are verified against the
 signal that motivated them; resolutions accrue as knowledge-base articles that
-inform recurrences once approved. Ahead: a declarative fleet inventory,
-knowledge-driven investigation shortcuts, and multi-model review.
+inform recurrences once approved. The estate itself is declared: an
+operator-owned inventory of hosts and clusters (`inventory.example.yaml`)
+feeds the system prompt as generated facts and validates the target of every
+gated host action before an approval is even requested. Ahead:
+knowledge-driven investigation shortcuts and multi-model review.

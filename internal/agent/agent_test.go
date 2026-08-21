@@ -49,10 +49,14 @@ func testRegistry(t *testing.T, called *int) *Registry {
 
 func TestSystemPrompt(t *testing.T) {
 	got := SystemPrompt("You investigate the ACME estate.",
+		"Inventory:\nHosts:\n- alpha",
 		[]string{"query_prometheus_instant", "query_prometheus_range"},
 		[]string{"query_loki_logs"},
 		[]string{"run_host_command", "run_kubectl_command"})
-	if !strings.HasPrefix(got, "You investigate the ACME estate. ") {
+	if !strings.Contains(got, "You investigate the ACME estate.\nInventory:\nHosts:\n- alpha\n") {
+		t.Errorf("environment section missing after preamble: %q", got)
+	}
+	if !strings.HasPrefix(got, "You investigate the ACME estate.\n") {
 		t.Errorf("preamble missing: %q", got)
 	}
 	if !strings.Contains(got, "query_prometheus_instant and query_prometheus_range are the ONLY way to read metrics.") {
@@ -70,11 +74,11 @@ func TestSystemPrompt(t *testing.T) {
 	if !strings.Contains(got, "End your final answer with a fenced json block") || !strings.Contains(got, `{"verdict":"healthy","summary":"<one line>","evidence":["<item>"]}`) {
 		t.Errorf("verdict contract missing: %q", got)
 	}
-	got = SystemPrompt("", nil, nil, []string{"run_host_command"})
+	got = SystemPrompt("", "", nil, nil, []string{"run_host_command"})
 	if !strings.Contains(got, "The gated tool run_host_command is for APPLYING an approved change") {
 		t.Errorf("singular gated sentence wrong: %q", got)
 	}
-	got = SystemPrompt("", nil, nil, nil)
+	got = SystemPrompt("", "", nil, nil, nil)
 	if !strings.HasPrefix(got, "You are an infrastructure investigation agent. ") {
 		t.Errorf("default preamble missing: %q", got)
 	}
@@ -443,5 +447,104 @@ func TestRegistryNeverRetriesGatedToolCall(t *testing.T) {
 	}
 	if sessions[1].calls != 0 {
 		t.Fatalf("gated tool was re-executed on the fresh session (%d calls)", sessions[1].calls)
+	}
+}
+
+type fakeResolver struct{}
+
+func (fakeResolver) ResolveTarget(target string) (string, bool) {
+	if target == "nas" || target == "nas.lab.example" || target == "nas.lab.example:9100" {
+		return "nas", true
+	}
+	return "", false
+}
+
+func (fakeResolver) KnownTargets() []string { return []string{"nas", "mini"} }
+
+type recordingApprover struct{ calls []ToolCall }
+
+func (a *recordingApprover) RequestApproval(_ context.Context, call ToolCall) (Decision, error) {
+	a.calls = append(a.calls, call)
+	return Decision{Approved: true, Via: "test"}, nil
+}
+
+func gatedHostRegistry(t *testing.T, executed *[]string) *Registry {
+	t.Helper()
+	registry := &Registry{tools: make(map[string]toolEntry)}
+	schema := map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"host": map[string]any{"type": "string"}, "command": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}},
+		"required":             []string{"host", "command"},
+		"additionalProperties": false,
+	}
+	err := registry.add("run_host_command", "test", schema, true, func(_ context.Context, args map[string]any) (string, error) {
+		*executed = append(*executed, fmt.Sprint(args["host"]))
+		return "ran", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
+func TestPreflightRejectsUnknownTargetBeforeApproval(t *testing.T) {
+	var executed []string
+	approver := &recordingApprover{}
+	completion := 0
+	runner := Runner{
+		Tools: gatedHostRegistry(t, &executed), Approver: approver, Targets: fakeResolver{},
+		Complete: func(_ context.Context, history []openai.ChatCompletionMessageParamUnion, _ []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+			completion++
+			if completion == 1 {
+				return ModelMessage{ToolCalls: []ModelToolCall{{Name: "run_host_command", Arguments: `{"host":"oddjob","command":["uptime"]}`, ID: "one"}}}, nil
+			}
+			toolText := history[len(history)-1].OfTool.Content.OfString.Value
+			if !strings.Contains(toolText, `host "oddjob" is not in the inventory`) || !strings.Contains(toolText, "known hosts: nas, mini") {
+				t.Fatalf("pre-flight rejection not returned to model: %q", toolText)
+			}
+			return ModelMessage{Content: "done"}, nil
+		},
+	}
+	metrics, err := runner.Run(context.Background(), "question", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approver.calls) != 0 {
+		t.Fatalf("approval was requested for an unknown target: %+v", approver.calls)
+	}
+	if len(executed) != 0 {
+		t.Fatalf("gated tool executed for an unknown target: %v", executed)
+	}
+	if metrics.ToolErrors != 1 {
+		t.Fatalf("metrics = %+v", metrics)
+	}
+}
+
+func TestPreflightRewritesAliasToCanonicalTarget(t *testing.T) {
+	var executed []string
+	approver := &recordingApprover{}
+	completion := 0
+	runner := Runner{
+		Tools: gatedHostRegistry(t, &executed), Approver: approver, Targets: fakeResolver{},
+		Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+			completion++
+			if completion == 1 {
+				return ModelMessage{ToolCalls: []ModelToolCall{{Name: "run_host_command", Arguments: `{"host":"nas.lab.example:9100","command":["uptime"]}`, ID: "one"}}}, nil
+			}
+			return ModelMessage{Content: "done"}, nil
+		},
+	}
+	if _, err := runner.Run(context.Background(), "question", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(approver.calls) != 1 {
+		t.Fatalf("approval calls = %+v", approver.calls)
+	}
+	call := approver.calls[0]
+	if call.Args["host"] != "nas" || !strings.Contains(call.Human, "nas:") || !strings.Contains(call.ArgsJSON, `"host":"nas"`) {
+		t.Fatalf("alias not rewritten to canonical: %+v", call)
+	}
+	if len(executed) != 1 || executed[0] != "nas" {
+		t.Fatalf("executed hosts = %v", executed)
 	}
 }

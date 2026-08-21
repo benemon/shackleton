@@ -91,6 +91,9 @@ func TestLoadValidatesRequiredFieldsAndAppliesDefaults(t *testing.T) {
 	if cfg.Agent.MaxRounds != 8 || cfg.Agent.CallTimeout.Duration() != 30*time.Second || cfg.Agent.InvestigationTimeout.Duration() != 10*time.Minute {
 		t.Fatalf("defaults = %+v", cfg.Agent)
 	}
+	if cfg.KBDir != "/tmp/shackleton/kb" || cfg.InventoryDir != "/tmp/shackleton/inventory" {
+		t.Fatalf("directory defaults = %q, %q", cfg.KBDir, cfg.InventoryDir)
+	}
 }
 
 func TestLoadResolvesEnvironmentAndFileSecretsFromTheirSources(t *testing.T) {

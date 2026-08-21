@@ -1,0 +1,21 @@
+# Operator-declared inventory. Place one or more YAML files like this in
+# inventory_dir; they are merged in file-name order. The inventory is a
+# security boundary: gated host commands are validated against the declared
+# hosts before any approval is requested, and it never holds credentials.
+hosts:
+  # Canonical connection target. Alert and metric identities matching name,
+  # hostname, or any alias (with or without a :port suffix) resolve here.
+  - name: alpha
+    hostname: alpha.example.internal
+    aliases: [alpha-storage]
+    # Connection mechanism only: ssh (default) or winrm.
+    connection: ssh
+  - name: beta
+    hostname: beta.example.internal
+clusters:
+  - name: prod
+    # Cluster API endpoint, for the record; cluster access itself stays with
+    # the configured MCP servers.
+    api: https://api.prod.example.internal:6443
+    # kubernetes or openshift (the vocabulary differs).
+    type: openshift

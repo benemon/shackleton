@@ -14,6 +14,12 @@ state_dir: /var/lib/shackleton
 # symptom). Defaults to <state_dir>/kb; point it at a git-managed path to put
 # the estate handbook under version control.
 kb_dir: /var/lib/shackleton/kb
+# Directory of operator-declared inventory YAML (see inventory.example.yaml).
+# Defaults to <state_dir>/inventory; an absent or empty directory disables
+# inventory features. When populated, hosts and clusters are rendered into
+# the system prompt as facts, and gated host commands are validated against
+# the declared hosts before any approval is requested.
+inventory_dir: /etc/shackleton/inventory
 # Dotenv files loaded before secret references are resolved.
 env_files: [/etc/shackleton/env]
 model:
@@ -75,15 +81,17 @@ sweeps:
     # Question posed to the model; a structured-verdict instruction is appended.
     question: Check node filesystem pressure and report any host above 80% used.
 agent:
-  # Operator-authored preamble describing the estate the agent investigates:
-  # its role, the topology, where measurements live. Appended to it are the
-  # fixed behavioral rules (metrics tool usage, gated-tool discipline, denial
-  # reporting), with gated tool names taken from gated_tools above.
+  # Operator-authored preamble describing the agent's role and judgement:
+  # how the estate behaves, where measurements live. Member names belong in
+  # the inventory, which is appended to this as a generated section; after
+  # both come the fixed behavioral rules (metrics tool usage, gated-tool
+  # discipline, denial reporting), with gated tool names taken from
+  # gated_tools above.
   prompt: >-
-    You are an infrastructure investigation agent for a small estate. The
-    estate is three bare-metal hosts named alpha, beta, and gamma running
-    services via systemd. Every numeric host measurement lives in Prometheus
-    via node-exporter and is keyed by the instance label.
+    You are an infrastructure investigation agent for a small estate of
+    bare-metal hosts running services via systemd. Every numeric host
+    measurement lives in Prometheus via node-exporter and is keyed by the
+    instance label.
   # Maximum model completion rounds per investigation.
   max_rounds: 8
   # Cap on a single tool result entering the model conversation; larger

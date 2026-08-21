@@ -19,6 +19,7 @@ import (
 
 	"github.com/benemon/shackleton/internal/agent"
 	"github.com/benemon/shackleton/internal/config"
+	"github.com/benemon/shackleton/internal/inventory"
 	"github.com/benemon/shackleton/internal/kb"
 	"github.com/benemon/shackleton/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -251,6 +252,7 @@ func TestEveryRouteRequiresBearerToken(t *testing.T) {
 		{http.MethodGet, "/v1/approvals/events", ""},
 		{http.MethodPost, "/v1/approvals/missing/decision", `{"approved":true}`},
 		{http.MethodGet, "/v1/audit", ""},
+		{http.MethodGet, "/v1/inventory", ""},
 		{http.MethodGet, "/metrics", ""},
 		{http.MethodGet, "/v1/config", ""},
 		{http.MethodGet, "/v1/health", ""},
@@ -267,6 +269,63 @@ func TestEveryRouteRequiresBearerToken(t *testing.T) {
 				t.Fatalf("%s %s with %q returned %d", route.method, route.path, authorization, response.Code)
 			}
 		}
+	}
+}
+
+func TestInventoryHTTPProjection(t *testing.T) {
+	dir := t.TempDir()
+	contents := `
+hosts:
+  - name: nas
+    hostname: nas.lab.example
+clusters:
+  - name: ocp
+    api: https://api.ocp.lab.example:6443
+    type: openshift
+`
+	if err := os.WriteFile(filepath.Join(dir, "lab.yaml"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := inventory.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(context.Background(), nil, nil, nil)
+	service.Inventory = inv
+	request := httptest.NewRequest(http.MethodGet, "/v1/inventory", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	NewHTTP(service, "token").ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var got struct {
+		Hosts []struct {
+			Name       string `json:"name"`
+			Hostname   string `json:"hostname"`
+			Connection string `json:"connection"`
+		} `json:"hosts"`
+		Clusters []struct {
+			Name string `json:"name"`
+			API  string `json:"api"`
+			Type string `json:"type"`
+		} `json:"clusters"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hosts) != 1 || got.Hosts[0].Name != "nas" || got.Hosts[0].Connection != "ssh" {
+		t.Fatalf("hosts = %+v", got.Hosts)
+	}
+	if len(got.Clusters) != 1 || got.Clusters[0].Type != "openshift" {
+		t.Fatalf("clusters = %+v", got.Clusters)
+	}
+
+	empty := New(context.Background(), nil, nil, nil)
+	response = httptest.NewRecorder()
+	NewHTTP(empty, "token").ServeHTTP(response, request.Clone(context.Background()))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"hosts":[]`) {
+		t.Fatalf("empty inventory projection: %d %s", response.Code, response.Body.String())
 	}
 }
 

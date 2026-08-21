@@ -12,16 +12,20 @@ import (
 )
 
 // SystemPrompt assembles the system prompt from the operator-authored
-// preamble (role + topology, from agent.prompt in the config) and the fixed
+// preamble (role + judgement, from agent.prompt in the config), the
+// environment section generated from inventory data, and the fixed
 // behavioral contract, with tool names drawn from what is actually
 // registered. The denial sentence is a hard requirement: the model must
 // report an operator deny as a decision, not invent a rationale for it.
-func SystemPrompt(preamble string, metricsTools, logsTools, gatedTools []string) string {
+func SystemPrompt(preamble, environment string, metricsTools, logsTools, gatedTools []string) string {
 	var b strings.Builder
 	if preamble == "" {
 		preamble = "You are an infrastructure investigation agent."
 	}
 	b.WriteString(preamble)
+	if environment != "" {
+		b.WriteString("\n" + environment + "\n")
+	}
 	if len(metricsTools) > 0 {
 		b.WriteString(" " + strings.Join(metricsTools, " and ") + " are the ONLY way to read metrics.")
 	}
@@ -53,6 +57,13 @@ type Decision struct {
 
 type Approver interface {
 	RequestApproval(ctx context.Context, call ToolCall) (Decision, error)
+}
+
+// TargetResolver validates a gated call's host target against the inventory
+// before any approval is requested, and maps aliases to the canonical name.
+type TargetResolver interface {
+	ResolveTarget(target string) (string, bool)
+	KnownTargets() []string
 }
 
 type Notifier interface {
@@ -95,6 +106,7 @@ type Runner struct {
 	Complete             CompletionFunc
 	Tools                *Registry
 	Approver             Approver
+	Targets              TargetResolver
 	Notifier             Notifier
 	Prompt               string
 	MaxRounds            int
@@ -143,7 +155,7 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 	}
 	prompt := r.Prompt
 	if prompt == "" {
-		prompt = SystemPrompt("", nil, nil, nil)
+		prompt = SystemPrompt("", "", nil, nil, nil)
 	}
 	messages := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(prompt + " The current time is " + time.Now().UTC().Format(time.RFC3339) + "."),
@@ -246,6 +258,25 @@ func (r *Runner) handleCall(ctx context.Context, raw ModelToolCall, timeout time
 	if !ok {
 		metrics.SchemaInvalid++
 		return callResult{fmt.Sprintf("Tool argument error for %s: JSON schema validation failed: arguments must be an object. Correct the arguments and retry.", raw.Name), decoded, true, true}
+	}
+	// Pre-flight target validation: a gated call against a host outside the
+	// inventory is rejected before any approval is minted, and an alias is
+	// rewritten to the canonical name so the approver and the executor see
+	// the same target.
+	if entry.gated && r.Targets != nil {
+		if target, ok := args["host"].(string); ok {
+			canonical, known := r.Targets.ResolveTarget(target)
+			if !known {
+				metrics.ToolErrors++
+				return callResult{fmt.Sprintf("Tool error: host %q is not in the inventory; known hosts: %s.", target, strings.Join(r.Targets.KnownTargets(), ", ")), args, false, true}
+			}
+			if canonical != target {
+				args["host"] = canonical
+				if encoded, err := json.Marshal(args); err == nil {
+					raw.Arguments = string(encoded)
+				}
+			}
+		}
 	}
 	call := ToolCall{Name: raw.Name, ArgsJSON: raw.Arguments, Args: args, ID: raw.ID, Human: humanRendering(raw.Name, args)}
 	if entry.gated {

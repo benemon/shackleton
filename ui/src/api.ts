@@ -6,6 +6,7 @@ export type Investigation = components['schemas']['Investigation'];
 export type PendingApproval = components['schemas']['PendingApproval'];
 export type ApprovalEvent = components['schemas']['ApprovalEvent'];
 export type ConfigView = components['schemas']['ConfigView'];
+export type Inventory = components['schemas']['Inventory'];
 
 const TOKEN_KEY = 'shackleton-token';
 
@@ -47,6 +48,7 @@ export const api = {
       body: JSON.stringify({ approved }),
     }),
   getConfig: () => request<ConfigView>('/v1/config'),
+  getInventory: () => request<Inventory>('/v1/inventory'),
 };
 
 // EventSource cannot send an Authorization header, so SSE runs over a fetch

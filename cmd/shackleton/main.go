@@ -19,6 +19,7 @@ import (
 
 	"github.com/benemon/shackleton/internal/agent"
 	"github.com/benemon/shackleton/internal/config"
+	"github.com/benemon/shackleton/internal/inventory"
 	"github.com/benemon/shackleton/internal/kb"
 	"github.com/benemon/shackleton/internal/service"
 	"github.com/benemon/shackleton/internal/store"
@@ -154,10 +155,15 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 
+	inv, err := inventory.Load(cfg.InventoryDir)
+	if err != nil {
+		return fmt.Errorf("inventory_dir: %w", err)
+	}
+
 	signalCtx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	investigationCtx, cancelInvestigations := context.WithCancel(ctx)
-	factory, closeSessions, err := newRunnerFactory(investigationCtx, cfg)
+	factory, closeSessions, err := newRunnerFactory(investigationCtx, cfg, inv)
 	if err != nil {
 		cancelInvestigations()
 		return err
@@ -176,6 +182,7 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("kb_dir: %w", err)
 	}
 	core.KB = kbStore
+	core.Inventory = inv
 	creds := func(channels []config.Channel) []telegram.Cred {
 		result := make([]telegram.Cred, 0, len(channels))
 		for _, channel := range channels {
@@ -426,7 +433,11 @@ func newRunner(ctx context.Context, approverName string, cfg *config.Config) (*a
 	if approverName != "cli-deny" && approverName != "cli-approve" && approverName != "telegram" {
 		return nil, func() {}, fmt.Errorf("unknown approver %q", approverName)
 	}
-	factory, closeSessions, err := newRunnerFactory(ctx, cfg)
+	inv, err := inventory.Load(cfg.InventoryDir)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("inventory_dir: %w", err)
+	}
+	factory, closeSessions, err := newRunnerFactory(ctx, cfg, inv)
 	if err != nil {
 		return nil, func() {}, err
 	}
@@ -453,7 +464,7 @@ func newRunner(ctx context.Context, approverName string, cfg *config.Config) (*a
 	return runner, closeSessions, nil
 }
 
-func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFactory, func(), error) {
+func newRunnerFactory(ctx context.Context, cfg *config.Config, inv *inventory.Inventory) (service.RunnerFactory, func(), error) {
 	gatedTools := make(map[string]bool, len(cfg.GatedTools))
 	for _, name := range cfg.GatedTools {
 		gatedTools[name] = true
@@ -497,10 +508,14 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config) (service.RunnerFa
 	closeSessions := func() { _ = registry.Close() }
 	openAIClient := openai.NewClient(option.WithBaseURL(cfg.Model.BaseURL), option.WithAPIKey(cfg.Model.APIKey.Value()))
 	complete := agent.StreamCompleter(openAIClient, cfg.Model.Name)
-	prompt := agent.SystemPrompt(cfg.Agent.Prompt, metricsTools, logsTools, cfg.GatedTools)
+	prompt := agent.SystemPrompt(cfg.Agent.Prompt, inv.Environment(), metricsTools, logsTools, cfg.GatedTools)
+	var targets agent.TargetResolver
+	if len(inv.Hosts) > 0 {
+		targets = inv
+	}
 	return func(events agent.EventSink, approver agent.Approver) *agent.Runner {
 		return &agent.Runner{
-			Complete: complete, Tools: registry, Approver: approver, Events: events,
+			Complete: complete, Tools: registry, Approver: approver, Targets: targets, Events: events,
 			Prompt: prompt, MaxRounds: cfg.Agent.MaxRounds, MaxToolResult: cfg.Agent.MaxToolResultChars,
 			CallTimeout:          cfg.Agent.CallTimeout.Duration(),
 			InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration(),

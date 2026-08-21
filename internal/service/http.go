@@ -25,6 +25,7 @@ func NewHTTP(service *Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/approvals/events", service.followApprovals)
 	mux.HandleFunc("POST /v1/approvals/{id}/decision", service.decideApproval)
 	mux.HandleFunc("GET /v1/audit", service.getAudit)
+	mux.HandleFunc("GET /v1/inventory", service.getInventory)
 	mux.HandleFunc("GET /v1/kb", service.listKB)
 	mux.HandleFunc("GET /v1/kb/{slug}", service.getKB)
 	mux.HandleFunc("GET /v1/config", service.getConfig)
@@ -272,6 +273,10 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, struct {
 		Error string `json:"error"`
 	}{message})
+}
+
+func (s *Service) getInventory(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.InventoryView())
 }
 
 func (s *Service) listKB(w http.ResponseWriter, r *http.Request) {

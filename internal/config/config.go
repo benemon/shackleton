@@ -164,6 +164,7 @@ type Config struct {
 	TLS            TLS             `yaml:"tls,omitempty"`
 	StateDir       string          `yaml:"state_dir"`
 	KBDir          string          `yaml:"kb_dir,omitempty"`
+	InventoryDir   string          `yaml:"inventory_dir,omitempty"`
 	EnvFiles       []string        `yaml:"env_files,omitempty"`
 	Model          Model           `yaml:"model"`
 	MCPServers     []MCPServer     `yaml:"mcp_servers"`
@@ -205,6 +206,9 @@ func (c *Config) applyDefaultsAndValidate() error {
 	}
 	if c.KBDir == "" {
 		c.KBDir = filepath.Join(c.StateDir, "kb")
+	}
+	if c.InventoryDir == "" {
+		c.InventoryDir = filepath.Join(c.StateDir, "inventory")
 	}
 	if c.Listen != "" {
 		_, port, err := net.SplitHostPort(c.Listen)
