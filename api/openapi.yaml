@@ -697,9 +697,11 @@ components:
               connection:
                 type: string
                 enum: [ssh, winrm]
+              cluster:
+                type: string
               status:
                 type: string
-                enum: [draft, approved]
+                enum: [draft, approved, ignored]
               source:
                 type: string
               first_seen:

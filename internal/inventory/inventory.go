@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -24,17 +25,15 @@ type Host struct {
 	Hostname   string   `yaml:"hostname,omitempty" json:"hostname,omitempty"`
 	Aliases    []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	Connection string   `yaml:"connection,omitempty" json:"connection"`
-	// Status draft marks a machine-proposed member: listed, but inert —
-	// excluded from identity resolution, the prompt environment, and
-	// gating until an operator approves it (flip the status or move the
-	// entry to an operator file). Source and FirstSeen are machine-written
-	// discovery metadata.
-	Status    string `yaml:"status,omitempty" json:"status,omitempty"`
-	Source    string `yaml:"source,omitempty" json:"source,omitempty"`
-	FirstSeen string `yaml:"first_seen,omitempty" json:"first_seen,omitempty"`
+	Cluster    string   `yaml:"cluster,omitempty" json:"cluster,omitempty"`
+	Status     string   `yaml:"status,omitempty" json:"status,omitempty"`
+	Source     string   `yaml:"source,omitempty" json:"source,omitempty"`
+	FirstSeen  string   `yaml:"first_seen,omitempty" json:"first_seen,omitempty"`
 }
 
-func (h Host) draft() bool { return h.Status == "draft" }
+func (h Host) inert() bool {
+	return h.Status == "draft" || h.Status == "ignored" || h.Cluster != ""
+}
 
 // connectionTarget is the address executors are given: hostname when it
 // differs from the friendly name, the name otherwise.
@@ -102,13 +101,12 @@ func Load(dir string) (*Inventory, error) {
 			if host.Connection != "ssh" && host.Connection != "winrm" {
 				return nil, fmt.Errorf("%s.connection %q is not supported (want ssh or winrm)", prefix, host.Connection)
 			}
-			if host.Status != "" && host.Status != "draft" && host.Status != "approved" {
-				return nil, fmt.Errorf("%s.status %q is not supported (want draft or approved)", prefix, host.Status)
+			if host.Status != "" && host.Status != "draft" && host.Status != "approved" && host.Status != "ignored" {
+				return nil, fmt.Errorf("%s.status %q is not supported (want draft, approved, or ignored)", prefix, host.Status)
 			}
-			// Drafts stay out of the identity and uniqueness maps: they are
-			// proposals, and a proposal must never break startup when the
-			// operator declares the same host before discovery self-heals.
-			if host.draft() {
+			// Inert records must not break startup when discovery and operator
+			// declarations briefly overlap before the next healing pass.
+			if host.inert() {
 				inv.Hosts = append(inv.Hosts, *host)
 				continue
 			}
@@ -164,12 +162,11 @@ func (inv *Inventory) ResolveTarget(target string) (string, bool) {
 	return "", false
 }
 
-// KnownTargets lists connection targets for pre-flight error messages;
-// drafts are not targets.
+// KnownTargets lists connection targets for pre-flight error messages.
 func (inv *Inventory) KnownTargets() []string {
 	names := make([]string, 0, len(inv.Hosts))
 	for _, host := range inv.Hosts {
-		if host.draft() {
+		if host.inert() {
 			continue
 		}
 		names = append(names, host.connectionTarget())
@@ -180,11 +177,9 @@ func (inv *Inventory) KnownTargets() []string {
 // Environment renders the inventory as fact lines for the system prompt and
 // KB articles; judgement prose stays in the operator preamble.
 func (inv *Inventory) Environment() string {
-	// Drafts are machine proposals no human has vouched for; only approved
-	// members feed the model's context (KB draft/approved parallel).
 	actionable := make([]Host, 0, len(inv.Hosts))
 	for _, host := range inv.Hosts {
-		if !host.draft() {
+		if !host.inert() {
 			actionable = append(actionable, host)
 		}
 	}
@@ -218,6 +213,16 @@ func (inv *Inventory) Environment() string {
 		b.WriteString("\nClusters:")
 		for _, cluster := range inv.Clusters {
 			b.WriteString("\n- " + cluster.Name + ": " + cluster.Type + ", API " + cluster.API)
+			var nodes []string
+			for _, host := range inv.Hosts {
+				if host.Cluster == cluster.Name && host.Status != "draft" && host.Status != "ignored" {
+					nodes = append(nodes, host.Name)
+				}
+			}
+			sort.Strings(nodes)
+			if len(nodes) > 0 {
+				b.WriteString(" (nodes: " + strings.Join(nodes, ", ") + ")")
+			}
 		}
 	}
 	return b.String()

@@ -93,6 +93,11 @@ hosts:
     hostname: nas.lab.example
     aliases: [storage]
   - name: mini
+  - name: ignored-node
+    hostname: ignored.example
+    status: ignored
+  - name: worker-node
+    cluster: ocp
 `)
 	inv, err := Load(dir)
 	if err != nil {
@@ -110,6 +115,11 @@ hosts:
 	if _, ok := inv.ResolveTarget("oddjob"); ok {
 		t.Error("unknown target resolved")
 	}
+	for _, target := range []string{"ignored-node", "ignored.example", "worker-node"} {
+		if _, ok := inv.ResolveTarget(target); ok {
+			t.Errorf("inert host %q resolved", target)
+		}
+	}
 	if got := inv.KnownTargets(); len(got) != 2 || got[0] != "nas.lab.example" || got[1] != "mini" {
 		t.Errorf("KnownTargets() = %v", got)
 	}
@@ -124,6 +134,14 @@ hosts:
     aliases: [storage]
   - name: winbox
     connection: winrm
+  - name: pending-node
+    status: draft
+  - name: ignored-node
+    status: ignored
+  - name: node-z
+    cluster: ocp
+  - name: node-a
+    cluster: ocp
 clusters:
   - name: ocp
     api: https://api.ocp.lab.example:6443
@@ -139,10 +157,15 @@ clusters:
 		"may target any identity listed",
 		"- nas (aka nas.lab.example, storage)",
 		"- winbox (winrm)",
-		"- ocp: openshift, API https://api.ocp.lab.example:6443",
+		"- ocp: openshift, API https://api.ocp.lab.example:6443 (nodes: node-a, node-z)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Environment() missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"pending-node", "ignored-node"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("Environment() contains inert standalone host %q:\n%s", unwanted, got)
 		}
 	}
 }

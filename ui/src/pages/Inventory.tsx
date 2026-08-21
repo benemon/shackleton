@@ -54,6 +54,10 @@ export function Inventory() {
                     <Td>
                       {host.status === 'draft' ? (
                         <Label color="grey">draft{host.source !== undefined ? ` · ${host.source}` : ''}</Label>
+                      ) : host.status === 'ignored' ? (
+                        <Label color="grey" variant="outline">ignored</Label>
+                      ) : host.cluster !== undefined ? (
+                        <Label color="blue">{host.cluster} node</Label>
                       ) : (
                         <Label color="green">declared</Label>
                       )}

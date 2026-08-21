@@ -417,8 +417,9 @@ export interface components {
                 aliases?: string[];
                 /** @enum {string} */
                 connection: "ssh" | "winrm";
+                cluster?: string;
                 /** @enum {string} */
-                status?: "draft" | "approved";
+                status?: "draft" | "approved" | "ignored";
                 source?: string;
                 /** Format: date-time */
                 first_seen?: string;
