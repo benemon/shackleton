@@ -18,6 +18,7 @@ import (
 
 	"github.com/benemon/shackleton/internal/agent"
 	"github.com/benemon/shackleton/internal/config"
+	"github.com/benemon/shackleton/internal/kb"
 	"github.com/benemon/shackleton/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go/v3"
@@ -803,4 +804,58 @@ func emptyRegistry(t *testing.T) *agent.Registry {
 	}
 	t.Cleanup(func() { _ = registry.Close() })
 	return registry
+}
+
+func TestResolutionRecordedToKB(t *testing.T) {
+	answer := "found it\n```json\n{\"verdict\":\"action\",\"summary\":\"csv stuck\",\"evidence\":[\"phase Pending\"]}\n```\n"
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := New(context.Background(), audit, nil, func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		return &agent.Runner{Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+			return agent.ModelMessage{Content: answer}, nil
+		}, Tools: emptyRegistry(t)}
+	})
+	kbStore, err := kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.KB = kbStore
+	if _, err := svc.CreateInvestigation(context.Background(), "Alertmanager alert firing: CsvAbnormal.\nLabels:", "alert:fp123"); err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	articles, err := kbStore.List()
+	if err != nil || len(articles) != 1 {
+		t.Fatalf("articles = %+v, %v", articles, err)
+	}
+	got := articles[0]
+	if got.Slug != "alert-csvabnormal" || got.Symptom.Alertname != "CsvAbnormal" || got.Verdict != "action" ||
+		got.Symptom.Fingerprints[0] != "fp123" || got.Status != "draft" {
+		t.Fatalf("front-matter = %+v", got)
+	}
+	raw, err := kbStore.Get("alert-csvabnormal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(raw)
+	for _, want := range []string{"## Root cause", "found it", "No remediation applied", "action: csv stuck", "- phase Pending"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("article missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "```json") {
+		t.Fatalf("verdict block should be stripped from root cause: %s", content)
+	}
+	// A healthy investigation with no actions must not create an article.
+	answer = "fine\n```json\n{\"verdict\":\"healthy\",\"summary\":\"ok\",\"evidence\":[]}\n```\n"
+	if _, err := svc.CreateInvestigation(context.Background(), "Alertmanager alert firing: OtherAlert.\n", "alert:fp999"); err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	articles, _ = kbStore.List()
+	if len(articles) != 1 {
+		t.Fatalf("healthy investigation created an article: %+v", articles)
+	}
 }

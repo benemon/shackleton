@@ -16,6 +16,7 @@ import (
 
 	"github.com/benemon/shackleton/internal/agent"
 	"github.com/benemon/shackleton/internal/config"
+	"github.com/benemon/shackleton/internal/kb"
 	"github.com/benemon/shackleton/internal/store"
 )
 
@@ -45,6 +46,7 @@ type ApprovalEvent struct {
 type ConfigView struct {
 	Listen         string           `json:"listen"`
 	StateDir       string           `json:"state_dir"`
+	KBDir          string           `json:"kb_dir"`
 	EnvFiles       []string         `json:"env_files"`
 	Model          ModelView        `json:"model"`
 	MCPServers     []MCPServerView  `json:"mcp_servers"`
@@ -113,7 +115,10 @@ type Service struct {
 	// investigations that need eyes (attention/action/failed). Sweeps notify
 	// through their own follower; Q&A answers return on their own channel.
 	Notifier agent.Notifier
-	wg       sync.WaitGroup
+	// KB, when set, receives a resolution record for every completed
+	// investigation with an attention/action verdict or an approved action.
+	KB *kb.Store
+	wg sync.WaitGroup
 
 	mu           sync.Mutex
 	pending      map[string]*pendingApproval
@@ -159,6 +164,7 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 		}
 		_ = investigation.Close()
 		s.notifyOutcome(investigation.ID, question, trigger, verdict, runErr)
+		s.recordResolution(investigation.ID, question, trigger, verdict, metrics.Answer, runErr)
 		class := triggerClass(trigger)
 		investigationsTotal.WithLabelValues(class, status).Inc()
 		investigationSeconds.WithLabelValues(class).Observe(metrics.Duration.Seconds())
@@ -196,6 +202,175 @@ func (s *Service) notifyOutcome(id, question, trigger string, verdict *store.Ver
 	if err := s.Notifier.Send(s.ctx, b.String()); err != nil {
 		log.Printf("notify outcome of %s: %v", id, err)
 	}
+}
+
+func (s *Service) recordResolution(id, question, trigger string, verdict *store.Verdict, answer string, runErr error) {
+	if s.KB == nil || runErr != nil {
+		return
+	}
+	events, err := s.store.Get(id)
+	if err != nil {
+		log.Printf("kb: read %s: %v", id, err)
+		return
+	}
+	actions := approvedActions(events)
+	if len(actions) == 0 && (verdict == nil || verdict.Verdict == "healthy") {
+		return
+	}
+	article := buildArticle(id, question, trigger, verdict, answer, s.agentPrompt(), events, actions)
+	if err := s.KB.Record(article); err != nil {
+		log.Printf("kb: record %s: %v", article.Slug, err)
+	}
+}
+
+func (s *Service) agentPrompt() string {
+	if s.config == nil {
+		return ""
+	}
+	return s.config.Agent.Prompt
+}
+
+func approvedActions(events []store.Event) []kb.Action {
+	type request struct{ name, human string }
+	requests := make(map[string]request)
+	approvedByName := make(map[string][]string)
+	var actions []kb.Action
+	for _, event := range events {
+		switch event.Type {
+		case store.EventApprovalRequested:
+			var payload struct {
+				CallID string `json:"call_id"`
+				Name   string `json:"name"`
+				Human  string `json:"human"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil {
+				requests[payload.CallID] = request{payload.Name, payload.Human}
+			}
+		case store.EventApprovalDecided:
+			var payload struct {
+				CallID   string `json:"call_id"`
+				Approved bool   `json:"approved"`
+			}
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.Approved {
+				if req, ok := requests[payload.CallID]; ok {
+					approvedByName[req.name] = append(approvedByName[req.name], req.human)
+				}
+			}
+		case store.EventToolCall:
+			var payload store.ToolCallPayload
+			if json.Unmarshal(event.Payload, &payload) != nil {
+				continue
+			}
+			// The first tool call for a name after its approved decision is
+			// the execution; correlate by arrival order.
+			if queue := approvedByName[payload.Name]; len(queue) > 0 {
+				actions = append(actions, kb.Action{Human: queue[0], Outcome: truncate(payload.ResultSnippet, 200)})
+				approvedByName[payload.Name] = queue[1:]
+			}
+		}
+	}
+	return actions
+}
+
+func buildArticle(id, question, trigger string, verdict *store.Verdict, answer, environment string, events []store.Event, actions []kb.Action) kb.Article {
+	slug, title, symptom := symptomIdentity(id, question, trigger)
+	var b strings.Builder
+	b.WriteString("# " + title + "\n\n## Environment\n" + orNone(environment, "(no operator preamble configured)"))
+	b.WriteString("\n\n## Issue\nTrigger: " + trigger + "\n\n" + question)
+	b.WriteString("\n\n## Diagnosis\nInvestigation " + id + ":\n")
+	listed := 0
+	for _, event := range events {
+		if event.Type != store.EventToolCall || listed >= 30 {
+			continue
+		}
+		var payload store.ToolCallPayload
+		if json.Unmarshal(event.Payload, &payload) != nil {
+			continue
+		}
+		status := "ok"
+		if payload.Error {
+			status = "error"
+		}
+		args, _ := json.Marshal(payload.Args)
+		b.WriteString("- " + payload.Name + " " + truncate(string(args), 120) + " → " + status + "\n")
+		listed++
+	}
+	b.WriteString("\n## Root cause\n" + strings.TrimSpace(stripVerdictBlock(answer)))
+	b.WriteString("\n\n## Resolution\n")
+	if len(actions) == 0 {
+		b.WriteString("No remediation applied.\n")
+	}
+	for _, action := range actions {
+		b.WriteString("- Approved: " + action.Human + " → " + action.Outcome + "\n")
+	}
+	front := kb.FrontMatter{Slug: slug, Title: title, Symptom: symptom,
+		Occurrences: []kb.Occurrence{{Investigation: id, At: time.Now().UTC()}},
+		Resolution:  kb.Resolution{Actions: actions, Verified: "none"}}
+	if verdict != nil {
+		front.Verdict = verdict.Verdict
+		b.WriteString("\n## Verdict\n" + verdict.Verdict + ": " + verdict.Summary + "\n")
+		for _, item := range verdict.Evidence {
+			b.WriteString("- " + item + "\n")
+		}
+	}
+	return kb.Article{FrontMatter: front, Body: b.String()}
+}
+
+func symptomIdentity(id, question, trigger string) (string, string, kb.Symptom) {
+	switch {
+	case strings.HasPrefix(trigger, "alert:"):
+		fingerprint := strings.TrimPrefix(trigger, "alert:")
+		alertname := "unknown-alert"
+		if rest, ok := strings.CutPrefix(question, "Alertmanager alert firing: "); ok {
+			if name, _, ok := strings.Cut(rest, "."); ok {
+				alertname = name
+			}
+		}
+		return "alert-" + slugify(alertname), alertname + " (alert)",
+			kb.Symptom{Trigger: "alert", Alertname: alertname, Fingerprints: []string{fingerprint}}
+	case strings.HasPrefix(trigger, "sweep:"):
+		name := strings.TrimPrefix(trigger, "sweep:")
+		return "sweep-" + slugify(name), "Sweep " + name, kb.Symptom{Trigger: "sweep", Sweep: name}
+	default:
+		headline, _, _ := strings.Cut(question, "\n")
+		return "adhoc-" + slugify(id), truncate(headline, 80), kb.Symptom{Trigger: trigger}
+	}
+}
+
+func slugify(value string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(value) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func stripVerdictBlock(answer string) string {
+	start := strings.LastIndex(answer, "```json")
+	if start < 0 || store.ParseVerdict(answer) == nil {
+		return answer
+	}
+	return answer[:start]
+}
+
+func truncate(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "…"
+}
+
+func orNone(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 type Alert struct {
@@ -407,7 +582,7 @@ func (s *Service) ConfigView() ConfigView {
 		return views
 	}
 	return ConfigView{
-		Listen: cfg.Listen, StateDir: cfg.StateDir, EnvFiles: append([]string{}, cfg.EnvFiles...), Sweeps: sweeps,
+		Listen: cfg.Listen, StateDir: cfg.StateDir, KBDir: cfg.KBDir, EnvFiles: append([]string{}, cfg.EnvFiles...), Sweeps: sweeps,
 		Model:          ModelView{BaseURL: cfg.Model.BaseURL, Name: cfg.Model.Name, APIKey: cfg.Model.APIKey.Ref()},
 		MCPServers:     servers,
 		MetricsSources: metrics, LogsSources: logs,
@@ -417,6 +592,20 @@ func (s *Service) ConfigView() ConfigView {
 			CallTimeout: cfg.Agent.CallTimeout.Duration().String(), InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration().String()},
 		APIToken: cfg.APIToken.Ref(),
 	}
+}
+
+func (s *Service) KBList() ([]kb.FrontMatter, error) {
+	if s.KB == nil {
+		return []kb.FrontMatter{}, nil
+	}
+	return s.KB.List()
+}
+
+func (s *Service) KBGet(slug string) ([]byte, error) {
+	if s.KB == nil {
+		return nil, fs.ErrNotExist
+	}
+	return s.KB.Get(slug)
 }
 
 func (s *Service) Health() HealthStatus {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/benemon/shackleton/internal/agent"
 	"github.com/benemon/shackleton/internal/config"
+	"github.com/benemon/shackleton/internal/kb"
 	"github.com/benemon/shackleton/internal/service"
 	"github.com/benemon/shackleton/internal/store"
 	"github.com/benemon/shackleton/internal/sweep"
@@ -168,6 +169,13 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	core := service.New(investigationCtx, audit, cfg, factory)
+	kbStore, err := kb.Open(cfg.KBDir)
+	if err != nil {
+		cancelInvestigations()
+		closeSessions()
+		return fmt.Errorf("kb_dir: %w", err)
+	}
+	core.KB = kbStore
 	creds := func(channels []config.Channel) []telegram.Cred {
 		result := make([]telegram.Cred, 0, len(channels))
 		for _, channel := range channels {

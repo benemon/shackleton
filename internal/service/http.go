@@ -25,6 +25,8 @@ func NewHTTP(service *Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/approvals/events", service.followApprovals)
 	mux.HandleFunc("POST /v1/approvals/{id}/decision", service.decideApproval)
 	mux.HandleFunc("GET /v1/audit", service.getAudit)
+	mux.HandleFunc("GET /v1/kb", service.listKB)
+	mux.HandleFunc("GET /v1/kb/{slug}", service.getKB)
 	mux.HandleFunc("GET /v1/config", service.getConfig)
 	mux.HandleFunc("GET /v1/health", service.getHealth)
 	mux.Handle("GET /metrics", promhttp.Handler())
@@ -270,6 +272,30 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, struct {
 		Error string `json:"error"`
 	}{message})
+}
+
+func (s *Service) listKB(w http.ResponseWriter, r *http.Request) {
+	articles, err := s.KBList()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, articles)
+}
+
+func (s *Service) getKB(w http.ResponseWriter, r *http.Request) {
+	raw, err := s.KBGet(r.PathValue("slug"))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			writeError(w, http.StatusNotFound, "article not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

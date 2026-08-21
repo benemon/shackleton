@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -162,6 +163,7 @@ type Config struct {
 	Listen         string          `yaml:"listen"`
 	TLS            TLS             `yaml:"tls,omitempty"`
 	StateDir       string          `yaml:"state_dir"`
+	KBDir          string          `yaml:"kb_dir,omitempty"`
 	EnvFiles       []string        `yaml:"env_files,omitempty"`
 	Model          Model           `yaml:"model"`
 	MCPServers     []MCPServer     `yaml:"mcp_servers"`
@@ -200,6 +202,9 @@ func Load(path string) (*Config, error) {
 func (c *Config) applyDefaultsAndValidate() error {
 	if c.StateDir == "" {
 		return fmt.Errorf("state_dir is required")
+	}
+	if c.KBDir == "" {
+		c.KBDir = filepath.Join(c.StateDir, "kb")
 	}
 	if c.Listen != "" {
 		_, port, err := net.SplitHostPort(c.Listen)

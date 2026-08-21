@@ -10,6 +10,10 @@ tls:
 api_token: {env: SHACKLETON_API_TOKEN}
 # Directory containing investigation audit state.
 state_dir: /var/lib/shackleton
+# Directory for knowledge-base articles (KCS-shaped markdown, one file per
+# symptom). Defaults to <state_dir>/kb; point it at a git-managed path to put
+# the estate handbook under version control.
+kb_dir: /var/lib/shackleton/kb
 # Dotenv files loaded before secret references are resolved.
 env_files: [/etc/shackleton/env]
 model:
