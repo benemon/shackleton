@@ -166,7 +166,6 @@ func TestApprovalDecisionsAreRoutedExactlyOnce(t *testing.T) {
 	}
 	results := make(chan result, 2)
 	for _, investigationID := range []string{"first", "second"} {
-		investigationID := investigationID
 		go func() {
 			decision, err := (&investigationApprover{service: service, investigationID: investigationID}).RequestApproval(
 				context.Background(), agent.ToolCall{ID: "shared-model-call-id", Name: "repair", Human: investigationID},

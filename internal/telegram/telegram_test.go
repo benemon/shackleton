@@ -227,8 +227,7 @@ func triggerApprovalFactory(t *testing.T) service.RunnerFactory {
 func testTrigger(t *testing.T, svc *service.Service) (*Trigger, *telegramRecorder, context.Context) {
 	t.Helper()
 	client, recorder := testBot(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx := t.Context()
 	trigger := &Trigger{bot: client, service: svc, chats: map[int64]*chatRole{7: {qa: true, approvals: true}}, messages: make(map[string][]postedApproval)}
 	events, unsubscribe := svc.SubscribeApprovals()
 	go func() {
@@ -257,8 +256,7 @@ func TestTriggerQuestionAuthorizationAndHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	svc := service.New(ctx, audit, nil, completedFactory(t, "answer"))
 	client, recorder := testBot(t)
 	recorder.mu.Lock()

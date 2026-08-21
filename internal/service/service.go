@@ -151,9 +151,7 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 		return store.Summary{}, err
 	}
 	summary := s.summary(investigation.ID)
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		sink := &investigationSink{investigation: investigation}
 		runner := s.newRunner(sink, &investigationApprover{service: s, investigationID: investigation.ID})
 		metrics, runErr := runner.Run(s.ctx, question, "")
@@ -180,7 +178,7 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 		toolCallErrors.WithLabelValues("unknown_tool").Add(float64(metrics.UnknownTool))
 		toolCallErrors.WithLabelValues("tool_error").Add(float64(metrics.ToolErrors))
 		toolCallsRecovered.Add(float64(metrics.Recovered))
-	}()
+	})
 	return summary, nil
 }
 
@@ -458,7 +456,8 @@ func (s *Service) recurrenceContext(alert Alert) string {
 	if count == 0 {
 		return ""
 	}
-	line := fmt.Sprintf("\nPrior history: this alert has been investigated %d time(s); most recently %s", count, last.StartedAt.UTC().Format("2006-01-02 15:04"))
+	var line strings.Builder
+	fmt.Fprintf(&line, "\nPrior history: this alert has been investigated %d time(s); most recently %s", count, last.StartedAt.UTC().Format("2006-01-02 15:04"))
 	if events, err := s.store.Get(last.ID); err == nil {
 		for _, event := range events {
 			if event.Type != store.EventCompleted {
@@ -466,24 +465,24 @@ func (s *Service) recurrenceContext(alert Alert) string {
 			}
 			var payload store.CompletedPayload
 			if json.Unmarshal(event.Payload, &payload) == nil && payload.Verdict != nil {
-				line += fmt.Sprintf(" with verdict %s: %s", payload.Verdict.Verdict, payload.Verdict.Summary)
+				fmt.Fprintf(&line, " with verdict %s: %s", payload.Verdict.Verdict, payload.Verdict.Summary)
 			}
 		}
 	}
-	line += "."
+	line.WriteString(".")
 	// Only operator-approved articles feed resolution context; drafts are
 	// machine prose no human has vouched for.
 	if s.KB != nil {
 		if articles, err := s.KB.List(); err == nil {
 			for _, article := range articles {
 				if article.Symptom.Alertname == name && article.Status == "approved" {
-					line += fmt.Sprintf(" An approved knowledge-base article exists for this symptom (%s).", article.Slug)
+					fmt.Fprintf(&line, " An approved knowledge-base article exists for this symptom (%s).", article.Slug)
 					break
 				}
 			}
 		}
 	}
-	return line + " Treat this as context only; verify the current state independently."
+	return line.String() + " Treat this as context only; verify the current state independently."
 }
 
 func triageQuestion(alert Alert) string {
