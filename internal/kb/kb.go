@@ -1,6 +1,6 @@
 // Package kb persists resolution records: one KCS-shaped markdown article per
 // symptom, front-matter for machines, prose for humans. Articles start as
-// machine-owned drafts; once an operator sets status: blessed the body is
+// machine-owned drafts; once an operator sets status: approved the body is
 // theirs and the system only ever appends occurrence metadata.
 package kb
 
@@ -68,7 +68,7 @@ func Open(dir string) (*Store, error) {
 const delimiter = "---\n"
 
 // Record writes or merges an article. A new slug becomes a draft. An existing
-// draft is rewritten wholesale (latest investigation wins). A blessed article
+// draft is rewritten wholesale (latest investigation wins). An approved article
 // keeps its body and prose untouched; only occurrences, fingerprints, and
 // resolution metadata are merged into the front-matter.
 func (s *Store) Record(article Article) error {
@@ -78,8 +78,8 @@ func (s *Store) Record(article Article) error {
 	existing, err := readArticle(path)
 	if err == nil {
 		merged := mergeMeta(existing.FrontMatter, article.FrontMatter)
-		if existing.Status == "blessed" {
-			merged.Status = "blessed"
+		if existing.Status == "approved" {
+			merged.Status = "approved"
 			merged.Title = existing.Title
 			return writeArticle(path, Article{FrontMatter: merged, Body: existing.Body})
 		}

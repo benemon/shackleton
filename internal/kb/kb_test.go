@@ -68,7 +68,7 @@ func TestDraftMergeRewritesBodyAndAccumulatesOccurrences(t *testing.T) {
 	}
 }
 
-func TestBlessedBodyAndTitleAreNeverTouched(t *testing.T) {
+func TestApprovedBodyAndTitleAreNeverTouched(t *testing.T) {
 	dir := t.TempDir()
 	store, err := Open(dir)
 	if err != nil {
@@ -77,9 +77,9 @@ func TestBlessedBodyAndTitleAreNeverTouched(t *testing.T) {
 	if err := store.Record(article("a", "Machine title", "machine body\n", "fp1")); err != nil {
 		t.Fatal(err)
 	}
-	// Operator blesses: edits status and prose by hand.
+	// Operator approves: edits status and prose by hand.
 	raw, _ := store.Get("a")
-	edited := strings.Replace(string(raw), "status: draft", "status: blessed", 1)
+	edited := strings.Replace(string(raw), "status: draft", "status: approved", 1)
 	edited = strings.Replace(edited, "machine body", "human prose, hard won", 1)
 	if err := os.WriteFile(dir+"/a.md", []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
@@ -90,14 +90,14 @@ func TestBlessedBodyAndTitleAreNeverTouched(t *testing.T) {
 	raw, _ = store.Get("a")
 	content := string(raw)
 	if !strings.Contains(content, "human prose, hard won") || strings.Contains(content, "machine body v2") {
-		t.Fatalf("blessed body was touched: %q", content)
+		t.Fatalf("approved body was touched: %q", content)
 	}
 	if !strings.Contains(content, "Machine title") || strings.Contains(content, "Machine retitle") {
-		t.Fatalf("blessed title was touched: %q", content)
+		t.Fatalf("approved title was touched: %q", content)
 	}
 	articles, _ := store.List()
-	if articles[0].Status != "blessed" || len(articles[0].Occurrences) != 2 || len(articles[0].Symptom.Fingerprints) != 2 {
-		t.Fatalf("blessed metadata not merged: %+v", articles[0])
+	if articles[0].Status != "approved" || len(articles[0].Occurrences) != 2 || len(articles[0].Symptom.Fingerprints) != 2 {
+		t.Fatalf("approved metadata not merged: %+v", articles[0])
 	}
 }
 

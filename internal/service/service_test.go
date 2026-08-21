@@ -871,7 +871,8 @@ func TestRecurrenceContextInjected(t *testing.T) {
 			return agent.ModelMessage{Content: answer}, nil
 		}, Tools: emptyRegistry(t)}
 	})
-	kbStore, err := kb.Open(t.TempDir())
+	kbDir := t.TempDir()
+	kbStore, err := kb.Open(kbDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -898,10 +899,31 @@ func TestRecurrenceContextInjected(t *testing.T) {
 	}
 	for _, want := range []string{"Prior history: this alert has been investigated 1 time(s)",
 		"verdict attention: csv is stuck",
-		"knowledge-base article exists for this symptom (alert-stuckcsv, status draft)",
 		"verify the current state independently"} {
 		if !strings.Contains(second.Question, want) {
 			t.Fatalf("question missing %q:\n%s", want, second.Question)
+		}
+	}
+	if strings.Contains(second.Question, "knowledge-base article") {
+		t.Fatalf("draft article must not feed resolution context:\n%s", second.Question)
+	}
+	// Operator approves the article; the next occurrence may cite it.
+	raw, err := kbStore.Get("alert-stuckcsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved := strings.Replace(string(raw), "status: draft", "status: approved", 1)
+	if err := os.WriteFile(filepath.Join(kbDir, "alert-stuckcsv.md"), []byte(approved), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	alert.Fingerprint = "fp3"
+	if _, _, err := svc.IngestAlerts(context.Background(), []Alert{alert}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	for _, summary := range svc.ListInvestigations() {
+		if summary.Trigger == "alert:fp3" && !strings.Contains(summary.Question, "An approved knowledge-base article exists for this symptom (alert-stuckcsv)") {
+			t.Fatalf("approved article not cited:\n%s", summary.Question)
 		}
 	}
 }

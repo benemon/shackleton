@@ -605,7 +605,7 @@ components:
           type: string
         status:
           type: string
-          enum: [draft, blessed]
+          enum: [draft, approved]
         symptom:
           type: object
           additionalProperties: false

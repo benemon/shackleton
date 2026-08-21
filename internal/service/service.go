@@ -442,11 +442,13 @@ func (s *Service) recurrenceContext(alert Alert) string {
 		}
 	}
 	line += "."
+	// Only operator-approved articles feed resolution context; drafts are
+	// machine prose no human has vouched for.
 	if s.KB != nil {
 		if articles, err := s.KB.List(); err == nil {
 			for _, article := range articles {
-				if article.Symptom.Alertname == name {
-					line += fmt.Sprintf(" A knowledge-base article exists for this symptom (%s, status %s).", article.Slug, article.Status)
+				if article.Symptom.Alertname == name && article.Status == "approved" {
+					line += fmt.Sprintf(" An approved knowledge-base article exists for this symptom (%s).", article.Slug)
 					break
 				}
 			}
