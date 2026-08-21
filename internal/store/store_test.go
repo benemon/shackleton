@@ -254,3 +254,25 @@ func TestParseVerdict(t *testing.T) {
 		}
 	}
 }
+
+func TestSummaryCarriesCompletedVerdict(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	investigation, err := s.Begin("q", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict := &Verdict{Verdict: "action", Summary: "disk filling", Evidence: []string{"87% used"}, Resolution: "cleared"}
+	if err := investigation.Append(EventCompleted, CompletedPayload{Answer: "answer", Verdict: verdict, Metrics: agent.Metrics{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := investigation.Close(); err != nil {
+		t.Fatal(err)
+	}
+	list := s.List()
+	if len(list) != 1 || !reflect.DeepEqual(list[0].Verdict, verdict) {
+		t.Fatalf("summary verdict = %+v", list[0].Verdict)
+	}
+}

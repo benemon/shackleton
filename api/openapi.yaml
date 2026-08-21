@@ -345,6 +345,8 @@ components:
         ended_at:
           type: string
           format: date-time
+        verdict:
+          $ref: '#/components/schemas/Verdict'
         answer:
           type: string
     Investigation:

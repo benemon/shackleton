@@ -112,6 +112,7 @@ type Summary struct {
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at,omitempty"`
 	Answer    string    `json:"answer,omitempty"`
+	Verdict   *Verdict  `json:"verdict,omitempty"`
 }
 
 type Store struct {
@@ -378,6 +379,7 @@ func applyEvent(summary *Summary, id string, event Event) {
 		summary.StartedAt = event.TS
 		summary.EndedAt = time.Time{}
 		summary.Answer = ""
+		summary.Verdict = nil
 		summary.Status = "running"
 	case EventCompleted:
 		var payload CompletedPayload
@@ -385,10 +387,12 @@ func applyEvent(summary *Summary, id string, event Event) {
 		summary.Status = "completed"
 		summary.EndedAt = event.TS
 		summary.Answer = payload.Answer
+		summary.Verdict = payload.Verdict
 	case EventFailed:
 		summary.Status = "failed"
 		summary.EndedAt = event.TS
 		summary.Answer = ""
+		summary.Verdict = nil
 	default:
 		summary.Status = "running"
 		summary.EndedAt = time.Time{}

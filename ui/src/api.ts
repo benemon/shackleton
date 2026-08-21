@@ -7,6 +7,8 @@ export type PendingApproval = components['schemas']['PendingApproval'];
 export type ApprovalEvent = components['schemas']['ApprovalEvent'];
 export type ConfigView = components['schemas']['ConfigView'];
 export type Inventory = components['schemas']['Inventory'];
+export type Verdict = components['schemas']['Verdict'];
+export type KBArticleMeta = components['schemas']['KBArticleMeta'];
 
 const TOKEN_KEY = 'shackleton-token';
 
@@ -49,6 +51,15 @@ export const api = {
     }),
   getConfig: () => request<ConfigView>('/v1/config'),
   getInventory: () => request<Inventory>('/v1/inventory'),
+  listKB: () => request<KBArticleMeta[]>('/v1/kb'),
+  // Raw markdown, not JSON.
+  getKBArticle: async (slug: string): Promise<string> => {
+    const res = await fetch(`/v1/kb/${encodeURIComponent(slug)}`, {
+      headers: { Authorization: `Bearer ${getToken() ?? ''}` },
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    return res.text();
+  },
 };
 
 // EventSource cannot send an Authorization header, so SSE runs over a fetch

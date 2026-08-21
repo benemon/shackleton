@@ -22,9 +22,10 @@ import { clearToken, getToken, setToken } from './api';
 import { Investigations } from './pages/Investigations';
 import { Approvals } from './pages/Approvals';
 import { Inventory } from './pages/Inventory';
+import { KB } from './pages/KB';
 import { Config } from './pages/Config';
 
-type Section = 'investigations' | 'approvals' | 'inventory' | 'config';
+type Section = 'investigations' | 'approvals' | 'kb' | 'inventory' | 'config';
 
 function TokenGate({ onSet }: { onSet: () => void }) {
   const [value, setValue] = useState('');
@@ -101,6 +102,9 @@ export function App() {
             <NavItem itemId="approvals" isActive={section === 'approvals'} onClick={() => setSection('approvals')}>
               Approvals
             </NavItem>
+            <NavItem itemId="kb" isActive={section === 'kb'} onClick={() => setSection('kb')}>
+              Knowledge base
+            </NavItem>
             <NavItem itemId="inventory" isActive={section === 'inventory'} onClick={() => setSection('inventory')}>
               Inventory
             </NavItem>
@@ -117,6 +121,7 @@ export function App() {
     <Page masthead={masthead} sidebar={sidebar}>
       {section === 'investigations' && <Investigations />}
       {section === 'approvals' && <Approvals />}
+      {section === 'kb' && <KB />}
       {section === 'inventory' && <Inventory />}
       {section === 'config' && <Config />}
     </Page>

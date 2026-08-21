@@ -19,6 +19,11 @@ function StatusLabel({ status }: { status: string }) {
   return <Label color={color}>{status}</Label>;
 }
 
+export function VerdictLabel({ verdict }: { verdict: string }) {
+  const color = verdict === 'healthy' ? 'green' : verdict === 'attention' ? 'yellow' : 'orangered';
+  return <Label color={color}>{verdict}</Label>;
+}
+
 function EventRow({ event }: { event: StoredEvent }) {
   const payload = event.payload as Record<string, unknown>;
   let detail = '';
@@ -105,6 +110,28 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
             <StatusLabel status={summary.status} /> <Label variant="outline">{summary.trigger}</Label>{' '}
             {new Date(summary.started_at).toLocaleString()}
           </p>
+          {summary.verdict !== undefined && (
+            <Card style={{ margin: '1rem 0' }}>
+              <CardTitle>
+                Verdict <VerdictLabel verdict={summary.verdict.verdict} />{' '}
+                {summary.verdict.resolution !== undefined && (
+                  <Label color={summary.verdict.resolution === 'cleared' ? 'green' : 'red'} variant="outline">
+                    resolution: {summary.verdict.resolution}
+                  </Label>
+                )}
+              </CardTitle>
+              <CardBody>
+                {summary.verdict.summary}
+                {summary.verdict.evidence.length > 0 && (
+                  <ul style={{ margin: '0.5rem 0 0 1.25rem' }}>
+                    {summary.verdict.evidence.map((item, index) => (
+                      <li key={index}>{item}</li>
+                    ))}
+                  </ul>
+                )}
+              </CardBody>
+            </Card>
+          )}
           {summary.answer !== undefined && summary.answer !== '' && (
             <Card style={{ margin: '1rem 0' }}>
               <CardTitle>Answer</CardTitle>
@@ -190,6 +217,7 @@ export function Investigations() {
             <th className="pf-v6-c-table__th">Question</th>
             <th className="pf-v6-c-table__th">Trigger</th>
             <th className="pf-v6-c-table__th">Status</th>
+            <th className="pf-v6-c-table__th">Verdict</th>
             <th className="pf-v6-c-table__th">Started</th>
           </tr>
         </thead>
@@ -200,6 +228,9 @@ export function Investigations() {
               <td className="pf-v6-c-table__td">{item.trigger}</td>
               <td className="pf-v6-c-table__td">
                 <StatusLabel status={item.status} />
+              </td>
+              <td className="pf-v6-c-table__td">
+                {item.verdict !== undefined ? <VerdictLabel verdict={item.verdict.verdict} /> : '—'}
               </td>
               <td className="pf-v6-c-table__td">{new Date(item.started_at).toLocaleString()}</td>
             </tr>

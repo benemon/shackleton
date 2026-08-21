@@ -258,6 +258,7 @@ export interface components {
             started_at: string;
             /** Format: date-time */
             ended_at: string;
+            verdict?: components["schemas"]["Verdict"];
             answer?: string;
         };
         Investigation: {
