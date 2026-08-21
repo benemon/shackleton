@@ -859,3 +859,49 @@ func TestResolutionRecordedToKB(t *testing.T) {
 		t.Fatalf("healthy investigation created an article: %+v", articles)
 	}
 }
+
+func TestRecurrenceContextInjected(t *testing.T) {
+	answer := "seen it\n```json\n{\"verdict\":\"attention\",\"summary\":\"csv is stuck\",\"evidence\":[]}\n```\n"
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := New(context.Background(), audit, nil, func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		return &agent.Runner{Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+			return agent.ModelMessage{Content: answer}, nil
+		}, Tools: emptyRegistry(t)}
+	})
+	kbStore, err := kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.KB = kbStore
+	alert := Alert{Status: "firing", Fingerprint: "fp1", Labels: map[string]string{"alertname": "StuckCsv"}}
+	if _, _, err := svc.IngestAlerts(context.Background(), []Alert{alert}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	first := svc.ListInvestigations()
+	if len(first) != 1 || strings.Contains(first[0].Question, "Prior history") {
+		t.Fatalf("first occurrence should have no history: %+v", first)
+	}
+	alert.Fingerprint = "fp2"
+	if _, _, err := svc.IngestAlerts(context.Background(), []Alert{alert}); err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	var second store.Summary
+	for _, summary := range svc.ListInvestigations() {
+		if summary.Trigger == "alert:fp2" {
+			second = summary
+		}
+	}
+	for _, want := range []string{"Prior history: this alert has been investigated 1 time(s)",
+		"verdict attention: csv is stuck",
+		"knowledge-base article exists for this symptom (alert-stuckcsv, status draft)",
+		"verify the current state independently"} {
+		if !strings.Contains(second.Question, want) {
+			t.Fatalf("question missing %q:\n%s", want, second.Question)
+		}
+	}
+}

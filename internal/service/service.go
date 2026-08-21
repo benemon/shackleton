@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"sort"
@@ -396,13 +397,62 @@ func (s *Service) IngestAlerts(ctx context.Context, alerts []Alert) (created, sk
 			skipped++
 			continue
 		}
-		if _, err := s.CreateInvestigation(ctx, triageQuestion(alert), trigger); err != nil {
+		if _, err := s.CreateInvestigation(ctx, triageQuestion(alert)+s.recurrenceContext(alert), trigger); err != nil {
 			return created, skipped, err
 		}
 		running[trigger] = true
 		created++
 	}
 	return created, skipped, nil
+}
+
+// recurrenceContext surfaces the symptom's history as one mention-only line:
+// prior investigations of the same alertname and any knowledge-base article.
+// It asserts nothing — the model is told to verify current state itself.
+func (s *Service) recurrenceContext(alert Alert) string {
+	name := alert.Labels["alertname"]
+	if name == "" {
+		return ""
+	}
+	headline := "Alertmanager alert firing: " + name + "."
+	count := 0
+	var last store.Summary
+	for _, summary := range s.store.List() {
+		if summary.Status == "running" || !strings.HasPrefix(summary.Trigger, "alert:") || !strings.HasPrefix(summary.Question, headline) {
+			continue
+		}
+		count++
+		if summary.StartedAt.After(last.StartedAt) {
+			last = summary
+		}
+	}
+	if count == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("\nPrior history: this alert has been investigated %d time(s); most recently %s", count, last.StartedAt.UTC().Format("2006-01-02 15:04"))
+	if events, err := s.store.Get(last.ID); err == nil {
+		for _, event := range events {
+			if event.Type != store.EventCompleted {
+				continue
+			}
+			var payload store.CompletedPayload
+			if json.Unmarshal(event.Payload, &payload) == nil && payload.Verdict != nil {
+				line += fmt.Sprintf(" with verdict %s: %s", payload.Verdict.Verdict, payload.Verdict.Summary)
+			}
+		}
+	}
+	line += "."
+	if s.KB != nil {
+		if articles, err := s.KB.List(); err == nil {
+			for _, article := range articles {
+				if article.Symptom.Alertname == name {
+					line += fmt.Sprintf(" A knowledge-base article exists for this symptom (%s, status %s).", article.Slug, article.Status)
+					break
+				}
+			}
+		}
+	}
+	return line + " Treat this as context only; verify the current state independently."
 }
 
 func triageQuestion(alert Alert) string {
