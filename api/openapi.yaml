@@ -435,6 +435,9 @@ components:
           type: array
           items:
             type: string
+        resolution:
+          type: string
+          enum: [cleared, persisting]
     FailedPayload:
       type: object
       additionalProperties: false
@@ -606,6 +609,8 @@ components:
         status:
           type: string
           enum: [draft, approved]
+        nominated:
+          type: boolean
         symptom:
           type: object
           additionalProperties: false
@@ -635,6 +640,8 @@ components:
               at:
                 type: string
                 format: date-time
+              verified:
+                type: string
         resolution:
           type: object
           additionalProperties: false

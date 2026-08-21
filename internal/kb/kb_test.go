@@ -21,7 +21,7 @@ func TestRecordCreatesDraftAndListsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Record(article("alert-testalert", "TestAlert (alert)", "# body one\n", "fp1")); err != nil {
+	if _, err := store.Record(article("alert-testalert", "TestAlert (alert)", "# body one\n", "fp1")); err != nil {
 		t.Fatal(err)
 	}
 	articles, err := store.List()
@@ -43,10 +43,10 @@ func TestDraftMergeRewritesBodyAndAccumulatesOccurrences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Record(article("a", "T", "old body\n", "fp1")); err != nil {
+	if _, err := store.Record(article("a", "T", "old body\n", "fp1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Record(article("a", "T2", "new body\n", "fp2")); err != nil {
+	if _, err := store.Record(article("a", "T2", "new body\n", "fp2")); err != nil {
 		t.Fatal(err)
 	}
 	articles, _ := store.List()
@@ -59,7 +59,7 @@ func TestDraftMergeRewritesBodyAndAccumulatesOccurrences(t *testing.T) {
 		t.Fatalf("draft body not rewritten: %q", raw)
 	}
 	// Same fingerprint again must not duplicate.
-	if err := store.Record(article("a", "T3", "x\n", "fp2")); err != nil {
+	if _, err := store.Record(article("a", "T3", "x\n", "fp2")); err != nil {
 		t.Fatal(err)
 	}
 	articles, _ = store.List()
@@ -74,7 +74,7 @@ func TestApprovedBodyAndTitleAreNeverTouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Record(article("a", "Machine title", "machine body\n", "fp1")); err != nil {
+	if _, err := store.Record(article("a", "Machine title", "machine body\n", "fp1")); err != nil {
 		t.Fatal(err)
 	}
 	// Operator approves: edits status and prose by hand.
@@ -84,7 +84,7 @@ func TestApprovedBodyAndTitleAreNeverTouched(t *testing.T) {
 	if err := os.WriteFile(dir+"/a.md", []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Record(article("a", "Machine retitle", "machine body v2\n", "fp2")); err != nil {
+	if _, err := store.Record(article("a", "Machine retitle", "machine body v2\n", "fp2")); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ = store.Get("a")

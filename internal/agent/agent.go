@@ -34,7 +34,7 @@ func SystemPrompt(preamble string, metricsTools, logsTools, gatedTools []string)
 		b.WriteString(" The gated tools " + strings.Join(gatedTools, " and ") + " are for APPLYING an approved change, never for lookups; prefer auto-approved read tools.")
 	}
 	b.WriteString(" Do not repeat a lookup you already ran. If the operator denies a proposed action, report the denial as an operator decision and do not invent a reason for it. If an approved action executes, re-run the check that motivated it and state whether the symptom cleared. After a few tool calls, stop and give your best concise answer.")
-	b.WriteString(" End your final answer with a fenced json block of exactly this shape:\n```json\n{\"verdict\":\"healthy\",\"summary\":\"<one line>\",\"evidence\":[\"<item>\"]}\n```\nverdict must be healthy, attention, or action. Use healthy only when nothing needs attention.")
+	b.WriteString(" End your final answer with a fenced json block of exactly this shape:\n```json\n{\"verdict\":\"healthy\",\"summary\":\"<one line>\",\"evidence\":[\"<item>\"]}\n```\nverdict must be healthy, attention, or action. Use healthy only when nothing needs attention. If an approved action was executed, also include \"resolution\":\"cleared\" or \"resolution\":\"persisting\" in the block, based on re-checking the signal that motivated the action.")
 	return b.String()
 }
 

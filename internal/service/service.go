@@ -219,8 +219,22 @@ func (s *Service) recordResolution(id, question, trigger string, verdict *store.
 		return
 	}
 	article := buildArticle(id, question, trigger, verdict, answer, s.agentPrompt(), events, actions)
-	if err := s.KB.Record(article); err != nil {
+	front, err := s.KB.Record(article)
+	if err != nil {
 		log.Printf("kb: record %s: %v", article.Slug, err)
+		return
+	}
+	// Nomination, never promotion: three verified resolutions earn the draft a
+	// review request; the status transition stays a human edit.
+	if front.Status == "draft" && !front.Nominated && front.ClearedCount() >= 3 && s.Notifier != nil {
+		if err := s.KB.MarkNominated(front.Slug); err != nil {
+			log.Printf("kb: nominate %s: %v", front.Slug, err)
+			return
+		}
+		text := fmt.Sprintf("KB nomination: draft article %s has a verified resolution for this symptom %d times. Review it and set status: approved to let it guide future investigations.", front.Slug, front.ClearedCount())
+		if err := s.Notifier.Send(s.ctx, text); err != nil {
+			log.Printf("kb: nominate %s: %v", front.Slug, err)
+		}
 	}
 }
 
@@ -304,9 +318,13 @@ func buildArticle(id, question, trigger string, verdict *store.Verdict, answer, 
 	for _, action := range actions {
 		b.WriteString("- Approved: " + action.Human + " → " + action.Outcome + "\n")
 	}
+	verified := ""
+	if len(actions) > 0 && verdict != nil && verdict.Resolution != "" {
+		verified = verdict.Resolution
+	}
 	front := kb.FrontMatter{Slug: slug, Title: title, Symptom: symptom,
-		Occurrences: []kb.Occurrence{{Investigation: id, At: time.Now().UTC()}},
-		Resolution:  kb.Resolution{Actions: actions, Verified: "none"}}
+		Occurrences: []kb.Occurrence{{Investigation: id, At: time.Now().UTC(), Verified: verified}},
+		Resolution:  kb.Resolution{Actions: actions, Verified: orNone(verified, "none")}}
 	if verdict != nil {
 		front.Verdict = verdict.Verdict
 		b.WriteString("\n## Verdict\n" + verdict.Verdict + ": " + verdict.Summary + "\n")

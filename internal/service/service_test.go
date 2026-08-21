@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -925,5 +926,78 @@ func TestRecurrenceContextInjected(t *testing.T) {
 		if summary.Trigger == "alert:fp3" && !strings.Contains(summary.Question, "An approved knowledge-base article exists for this symptom (alert-stuckcsv)") {
 			t.Fatalf("approved article not cited:\n%s", summary.Question)
 		}
+	}
+}
+
+func TestVerifiedResolutionsNominateDraftOnce(t *testing.T) {
+	answer := "fixed it\n```json\n{\"verdict\":\"attention\",\"summary\":\"repaired\",\"evidence\":[\"before/after\"],\"resolution\":\"cleared\"}\n```\n"
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := agent.NewRegistry(context.Background(), []agent.MCPServer{{
+		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return approvalSession{}, nil },
+	}}, map[string]bool{"repair": true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	svc := New(context.Background(), audit, nil, func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		completion := 0
+		return &agent.Runner{
+			Tools: registry, Events: events, Approver: approver,
+			Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+				completion++
+				if completion == 1 {
+					return agent.ModelMessage{ToolCalls: []agent.ModelToolCall{{Name: "repair", Arguments: `{}`, ID: "call"}}}, nil
+				}
+				return agent.ModelMessage{Content: answer}, nil
+			},
+		}
+	})
+	kbStore, err := kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.KB = kbStore
+	notifier := &recordingNotifier{}
+	svc.Notifier = notifier
+	approveAll := func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, pending := range svc.ListPendingApprovals() {
+				_ = svc.DecideApproval(pending.ID, true, "api")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	for i := 1; i <= 4; i++ {
+		alert := Alert{Status: "firing", Fingerprint: fmt.Sprintf("fp%d", i), Labels: map[string]string{"alertname": "Repairable"}}
+		if _, _, err := svc.IngestAlerts(context.Background(), []Alert{alert}); err != nil {
+			t.Fatal(err)
+		}
+		go approveAll()
+		svc.Wait()
+	}
+	articles, err := kbStore.List()
+	if err != nil || len(articles) != 1 {
+		t.Fatalf("articles = %+v, %v", articles, err)
+	}
+	got := articles[0]
+	if got.ClearedCount() != 4 || got.Resolution.Verified != "cleared" || !got.Nominated || got.Status != "draft" {
+		t.Fatalf("front-matter = %+v", got)
+	}
+	nominations := 0
+	for _, message := range notifier.messages() {
+		if strings.HasPrefix(message, "KB nomination:") {
+			nominations++
+			if !strings.Contains(message, got.Slug) {
+				t.Fatalf("nomination missing slug: %q", message)
+			}
+		}
+	}
+	if nominations != 1 {
+		t.Fatalf("nominations = %d, want exactly 1", nominations)
 	}
 }

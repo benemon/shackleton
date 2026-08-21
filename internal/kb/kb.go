@@ -26,6 +26,7 @@ type Symptom struct {
 type Occurrence struct {
 	Investigation string    `yaml:"investigation" json:"investigation"`
 	At            time.Time `yaml:"at" json:"at"`
+	Verified      string    `yaml:"verified,omitempty" json:"verified,omitempty"`
 }
 
 type Action struct {
@@ -42,10 +43,23 @@ type FrontMatter struct {
 	Slug        string       `yaml:"slug" json:"slug"`
 	Title       string       `yaml:"title" json:"title"`
 	Status      string       `yaml:"status" json:"status"`
+	Nominated   bool         `yaml:"nominated,omitempty" json:"nominated,omitempty"`
 	Symptom     Symptom      `yaml:"symptom" json:"symptom"`
 	Verdict     string       `yaml:"verdict" json:"verdict"`
 	Occurrences []Occurrence `yaml:"occurrences" json:"occurrences"`
 	Resolution  Resolution   `yaml:"resolution" json:"resolution"`
+}
+
+// ClearedCount is the number of occurrences whose resolution verified as
+// cleared — the nomination currency.
+func (f FrontMatter) ClearedCount() int {
+	count := 0
+	for _, occurrence := range f.Occurrences {
+		if occurrence.Verified == "cleared" {
+			count++
+		}
+	}
+	return count
 }
 
 type Article struct {
@@ -67,11 +81,12 @@ func Open(dir string) (*Store, error) {
 
 const delimiter = "---\n"
 
-// Record writes or merges an article. A new slug becomes a draft. An existing
-// draft is rewritten wholesale (latest investigation wins). An approved article
-// keeps its body and prose untouched; only occurrences, fingerprints, and
-// resolution metadata are merged into the front-matter.
-func (s *Store) Record(article Article) error {
+// Record writes or merges an article and returns the persisted front-matter.
+// A new slug becomes a draft. An existing draft is rewritten wholesale
+// (latest investigation wins). An approved article keeps its body and prose
+// untouched; only occurrences, fingerprints, and resolution metadata are
+// merged into the front-matter.
+func (s *Store) Record(article Article) (FrontMatter, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := s.path(article.Slug)
@@ -81,17 +96,30 @@ func (s *Store) Record(article Article) error {
 		if existing.Status == "approved" {
 			merged.Status = "approved"
 			merged.Title = existing.Title
-			return writeArticle(path, Article{FrontMatter: merged, Body: existing.Body})
+			return merged, writeArticle(path, Article{FrontMatter: merged, Body: existing.Body})
 		}
-		return writeArticle(path, Article{FrontMatter: merged, Body: article.Body})
+		return merged, writeArticle(path, Article{FrontMatter: merged, Body: article.Body})
 	}
 	if !os.IsNotExist(err) {
-		return err
+		return FrontMatter{}, err
 	}
 	article.Status = "draft"
 	if article.Resolution.Verified == "" {
 		article.Resolution.Verified = "none"
 	}
+	return article.FrontMatter, writeArticle(path, article)
+}
+
+// MarkNominated persists the nominated flag, leaving body and prose alone.
+func (s *Store) MarkNominated(slug string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := s.path(slug)
+	article, err := readArticle(path)
+	if err != nil {
+		return err
+	}
+	article.Nominated = true
 	return writeArticle(path, article)
 }
 
@@ -110,7 +138,10 @@ func mergeMeta(existing, incoming FrontMatter) FrontMatter {
 	}
 	merged.Symptom.Fingerprints = fingerprints
 	merged.Status = existing.Status
-	if incoming.Resolution.Verified == "" {
+	merged.Nominated = existing.Nominated
+	// Verification only upgrades: a later occurrence with nothing to verify
+	// must not erase an earlier cleared/persisting outcome.
+	if incoming.Resolution.Verified == "" || incoming.Resolution.Verified == "none" {
 		merged.Resolution.Verified = existing.Resolution.Verified
 	}
 	if merged.Resolution.Verified == "" {

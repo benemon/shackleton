@@ -56,6 +56,9 @@ type Verdict struct {
 	Verdict  string   `json:"verdict"`
 	Summary  string   `json:"summary"`
 	Evidence []string `json:"evidence"`
+	// Resolution is the model's post-action re-check outcome: cleared or
+	// persisting. Present only when an approved action executed.
+	Resolution string `json:"resolution,omitempty"`
 }
 
 type CompletedPayload struct {
@@ -87,6 +90,9 @@ func ParseVerdict(answer string) *Verdict {
 	}
 	switch parsed.Verdict {
 	case "healthy", "attention", "action":
+		if parsed.Resolution != "cleared" && parsed.Resolution != "persisting" {
+			parsed.Resolution = ""
+		}
 		return &parsed
 	}
 	return nil
