@@ -459,6 +459,10 @@ func (t *Trigger) handleCallback(ctx context.Context, callback callbackQuery) {
 	}
 	t.mu.Unlock()
 	if !known {
+		// A tap on a button from before a restart, or on an approval that
+		// already settled, must not be silent — the operator deserves to know
+		// the tap did nothing.
+		_ = t.bot.answerCallback(ctx, callback.ID, "Expired or already settled")
 		log.Printf("telegram callback ignored for unknown, settled, or stale approval %q", approvalID)
 		return
 	}

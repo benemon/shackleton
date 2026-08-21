@@ -184,8 +184,9 @@ func runServe(ctx context.Context, args []string) error {
 	var notifier agent.Notifier
 	if len(senders) > 0 {
 		notifier = fanoutNotifier(senders)
+		core.Notifier = notifier
 	} else {
-		fmt.Fprintln(os.Stderr, "no notification channels configured; sweep verdicts land in the audit trail only")
+		fmt.Fprintln(os.Stderr, "no notification channels configured; investigation outcomes land in the audit trail only")
 	}
 	if len(cfg.Sweeps) > 0 {
 		sweep.Run(investigationCtx, cfg.Sweeps, core, notifier)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -108,7 +109,11 @@ type Service struct {
 	store     *store.Store
 	config    *config.Config
 	newRunner RunnerFactory
-	wg        sync.WaitGroup
+	// Notifier, when set, receives outcomes of alert- and API-triggered
+	// investigations that need eyes (attention/action/failed). Sweeps notify
+	// through their own follower; Q&A answers return on their own channel.
+	Notifier agent.Notifier
+	wg       sync.WaitGroup
 
 	mu           sync.Mutex
 	pending      map[string]*pendingApproval
@@ -145,13 +150,15 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 			runErr = eventErr
 		}
 		status := "completed"
+		verdict := store.ParseVerdict(metrics.Answer)
 		if runErr != nil {
 			status = "failed"
 			_ = investigation.Append(store.EventFailed, store.FailedPayload{Reason: runErr.Error(), Metrics: metrics})
 		} else {
-			_ = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Verdict: store.ParseVerdict(metrics.Answer), Metrics: metrics})
+			_ = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Verdict: verdict, Metrics: metrics})
 		}
 		_ = investigation.Close()
+		s.notifyOutcome(investigation.ID, question, trigger, verdict, runErr)
 		class := triggerClass(trigger)
 		investigationsTotal.WithLabelValues(class, status).Inc()
 		investigationSeconds.WithLabelValues(class).Observe(metrics.Duration.Seconds())
@@ -163,6 +170,32 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 		toolCallsRecovered.Add(float64(metrics.Recovered))
 	}()
 	return summary, nil
+}
+
+func (s *Service) notifyOutcome(id, question, trigger string, verdict *store.Verdict, runErr error) {
+	if s.Notifier == nil || (!strings.HasPrefix(trigger, "alert:") && trigger != "api") {
+		return
+	}
+	headline, _, _ := strings.Cut(question, "\n")
+	var b strings.Builder
+	b.WriteString(headline + "\n")
+	switch {
+	case runErr != nil:
+		b.WriteString("Investigation failed: " + runErr.Error())
+	case verdict == nil:
+		b.WriteString("ATTENTION: completed without a structured verdict")
+	case verdict.Verdict == "healthy":
+		return
+	default:
+		b.WriteString(strings.ToUpper(verdict.Verdict) + ": " + verdict.Summary)
+		for _, item := range verdict.Evidence {
+			b.WriteString("\n- " + item)
+		}
+	}
+	b.WriteString("\n(" + id + ")")
+	if err := s.Notifier.Send(s.ctx, b.String()); err != nil {
+		log.Printf("notify outcome of %s: %v", id, err)
+	}
 }
 
 type Alert struct {

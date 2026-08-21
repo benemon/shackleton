@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -723,4 +724,83 @@ func TestApprovalDecisionMetricByViaAndOutcome(t *testing.T) {
 	if got := testutil.ToFloat64(approvalDecisions.WithLabelValues("telegram", "false")) - before; got != 1 {
 		t.Fatalf("telegram/false delta = %v, want 1", got)
 	}
+}
+
+type recordingNotifier struct {
+	mu   sync.Mutex
+	sent []string
+}
+
+func (n *recordingNotifier) Send(_ context.Context, text string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.sent = append(n.sent, text)
+	return nil
+}
+
+func (n *recordingNotifier) messages() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string{}, n.sent...)
+}
+
+func TestOutcomeNotificationRouting(t *testing.T) {
+	answer := func(verdict string) string {
+		return "analysis prose\n```json\n{\"verdict\":\"" + verdict + "\",\"summary\":\"the summary\",\"evidence\":[\"item one\"]}\n```\n"
+	}
+	cases := []struct {
+		name    string
+		trigger string
+		answer  string
+		runErr  error
+		want    int
+	}{
+		{"alert action notifies", "alert:abc", answer("action"), nil, 1},
+		{"alert healthy silent", "alert:abc", answer("healthy"), nil, 0},
+		{"alert no verdict notifies", "alert:abc", "prose only", nil, 1},
+		{"api attention notifies", "api", answer("attention"), nil, 1},
+		{"telegram excluded", "telegram", answer("action"), nil, 0},
+		{"sweep excluded", "sweep:node-fs", answer("action"), nil, 0},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			audit, err := store.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc := New(context.Background(), audit, nil, func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+				return &agent.Runner{Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+					return agent.ModelMessage{Content: test.answer}, nil
+				}, Tools: emptyRegistry(t)}
+			})
+			notifier := &recordingNotifier{}
+			svc.Notifier = notifier
+			if _, err := svc.CreateInvestigation(context.Background(), "Alertmanager alert firing: TestAlert.\ndetails", test.trigger); err != nil {
+				t.Fatal(err)
+			}
+			svc.Wait()
+			got := notifier.messages()
+			if len(got) != test.want {
+				t.Fatalf("notifications = %q, want %d", got, test.want)
+			}
+			if test.want == 1 {
+				if !strings.Contains(got[0], "Alertmanager alert firing: TestAlert.") || !strings.Contains(got[0], "(20") {
+					t.Fatalf("notification missing headline or id: %q", got[0])
+				}
+				if test.answer != "prose only" && !strings.Contains(got[0], "the summary") {
+					t.Fatalf("notification missing summary: %q", got[0])
+				}
+			}
+		})
+	}
+}
+
+func emptyRegistry(t *testing.T) *agent.Registry {
+	t.Helper()
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.Close() })
+	return registry
 }
