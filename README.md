@@ -50,6 +50,12 @@ it is a cluster, that leaves a gap. Shackleton fills it, lab-benefit-first.
   request and await a human decision" — with per-channel adapters.
 - **Safety:** mutating actions are human-approved; the model never sees raw
   credentials (custody stays in the tool/adapter layer).
+- **Projections:** the same service core is exposed as the REST API + embedded
+  console and as an MCP server on `/mcp` — ask-and-read only (start and read
+  investigations, search the knowledge base); approval surfaces stay
+  exclusively human. Other agents get estate answers without holding estate
+  credentials: `claude mcp add --transport http shackleton
+  https://<host>:8420/mcp --header "Authorization: Bearer <token>"`.
 - **Modes:** proactive (scheduled, silent-when-healthy, structured verdicts) and
   reactive (streaming Q&A / alert triage).
 

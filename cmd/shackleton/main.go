@@ -210,6 +210,7 @@ func runServe(ctx context.Context, args []string) error {
 	root := http.NewServeMux()
 	root.Handle("/v1/", api)
 	root.Handle("/metrics", api)
+	root.Handle("/mcp", service.NewMCP(core, cfg.APIToken.Value()))
 	root.Handle("/", ui.Handler())
 	server := &http.Server{Addr: cfg.Listen, Handler: root}
 	serverErrors := make(chan error, 1)
