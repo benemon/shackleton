@@ -13,14 +13,6 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-const scaffold = "\n\nEnd your final answer with a fenced json block of exactly this shape:\n```json\n{\"verdict\":\"healthy\",\"summary\":\"<one line>\",\"evidence\":[\"<item>\"]}\n```\nverdict must be healthy, attention, or action. Use healthy only when nothing needs attention."
-
-type verdict struct {
-	Verdict  string   `json:"verdict"`
-	Summary  string   `json:"summary"`
-	Evidence []string `json:"evidence"`
-}
-
 func Run(ctx context.Context, sweeps []config.Sweep, svc *service.Service, notifier agent.Notifier) {
 	engine := cron.New()
 	for _, sw := range sweeps {
@@ -34,7 +26,7 @@ func Run(ctx context.Context, sweeps []config.Sweep, svc *service.Service, notif
 }
 
 func runSweep(ctx context.Context, svc *service.Service, notifier agent.Notifier, sw config.Sweep) {
-	summary, err := svc.CreateInvestigation(ctx, sw.Question+scaffold, "sweep:"+sw.Name)
+	summary, err := svc.CreateInvestigation(ctx, sw.Question, "sweep:"+sw.Name)
 	if err != nil {
 		log.Printf("sweep %s: create investigation: %v", sw.Name, err)
 		return
@@ -45,7 +37,7 @@ func runSweep(ctx context.Context, svc *service.Service, notifier agent.Notifier
 		return
 	}
 	defer cancel()
-	result, done := verdict{}, false
+	result, done := store.Verdict{}, false
 	for _, event := range snapshot {
 		if result, done = terminalVerdict(event); done {
 			break
@@ -78,39 +70,18 @@ func runSweep(ctx context.Context, svc *service.Service, notifier agent.Notifier
 	}
 }
 
-func terminalVerdict(event store.Event) (verdict, bool) {
+func terminalVerdict(event store.Event) (store.Verdict, bool) {
 	switch event.Type {
 	case store.EventCompleted:
 		var payload store.CompletedPayload
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return verdict{Verdict: "attention", Summary: "verdict unparseable"}, true
+		if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.Verdict == nil {
+			return store.Verdict{Verdict: "attention", Summary: "verdict unparseable"}, true
 		}
-		return parseVerdict(payload.Answer), true
+		return *payload.Verdict, true
 	case store.EventFailed:
 		var payload store.FailedPayload
 		_ = json.Unmarshal(event.Payload, &payload)
-		return verdict{Verdict: "attention", Summary: "investigation failed: " + payload.Reason}, true
+		return store.Verdict{Verdict: "attention", Summary: "investigation failed: " + payload.Reason}, true
 	}
-	return verdict{}, false
-}
-
-func parseVerdict(answer string) verdict {
-	unparseable := verdict{Verdict: "attention", Summary: "verdict unparseable"}
-	start := strings.LastIndex(answer, "```json")
-	if start < 0 {
-		return unparseable
-	}
-	body, _, ok := strings.Cut(answer[start+len("```json"):], "```")
-	if !ok {
-		return unparseable
-	}
-	var parsed verdict
-	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &parsed); err != nil {
-		return unparseable
-	}
-	switch parsed.Verdict {
-	case "healthy", "attention", "action":
-		return parsed
-	}
-	return unparseable
+	return store.Verdict{}, false
 }

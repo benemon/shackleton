@@ -52,14 +52,44 @@ type ApprovalDecidedPayload struct {
 	Via      string `json:"via"`
 }
 
+type Verdict struct {
+	Verdict  string   `json:"verdict"`
+	Summary  string   `json:"summary"`
+	Evidence []string `json:"evidence"`
+}
+
 type CompletedPayload struct {
 	Answer  string        `json:"answer"`
+	Verdict *Verdict      `json:"verdict,omitempty"`
 	Metrics agent.Metrics `json:"metrics"`
 }
 
 type FailedPayload struct {
 	Reason  string        `json:"reason"`
 	Metrics agent.Metrics `json:"metrics"`
+}
+
+// ParseVerdict extracts the structured verdict from the trailing fenced json
+// block the behavioral contract asks for. Returns nil when the answer carries
+// no valid block — callers decide whether absence matters.
+func ParseVerdict(answer string) *Verdict {
+	start := strings.LastIndex(answer, "```json")
+	if start < 0 {
+		return nil
+	}
+	body, _, ok := strings.Cut(answer[start+len("```json"):], "```")
+	if !ok {
+		return nil
+	}
+	var parsed Verdict
+	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &parsed); err != nil {
+		return nil
+	}
+	switch parsed.Verdict {
+	case "healthy", "attention", "action":
+		return &parsed
+	}
+	return nil
 }
 
 type Event struct {

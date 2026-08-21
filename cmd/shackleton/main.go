@@ -120,7 +120,7 @@ func runAgent(ctx context.Context, args []string) error {
 	if runErr != nil {
 		err = investigation.Append(store.EventFailed, store.FailedPayload{Reason: runErr.Error(), Metrics: metrics})
 	} else {
-		err = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Metrics: metrics})
+		err = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Verdict: store.ParseVerdict(metrics.Answer), Metrics: metrics})
 	}
 	if closeErr := investigation.Close(); err == nil {
 		err = closeErr
@@ -324,7 +324,7 @@ func runBench(ctx context.Context, args []string) error {
 				err = investigation.Append(store.EventFailed, store.FailedPayload{Reason: runErr.Error(), Metrics: metrics})
 				failures = append(failures, benchFailure{scenario.ID, run, runErr.Error()})
 			} else {
-				err = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Metrics: metrics})
+				err = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Verdict: store.ParseVerdict(metrics.Answer), Metrics: metrics})
 			}
 			if closeErr := investigation.Close(); err == nil {
 				err = closeErr

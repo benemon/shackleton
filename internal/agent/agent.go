@@ -28,10 +28,13 @@ func SystemPrompt(preamble string, metricsTools, logsTools, gatedTools []string)
 	if len(logsTools) > 0 {
 		b.WriteString(" Use " + strings.Join(logsTools, " and ") + " to search logs when corroborating a finding.")
 	}
-	if len(gatedTools) > 0 {
+	if len(gatedTools) == 1 {
+		b.WriteString(" The gated tool " + gatedTools[0] + " is for APPLYING an approved change, never for lookups; prefer auto-approved read tools.")
+	} else if len(gatedTools) > 1 {
 		b.WriteString(" The gated tools " + strings.Join(gatedTools, " and ") + " are for APPLYING an approved change, never for lookups; prefer auto-approved read tools.")
 	}
-	b.WriteString(" Do not repeat a lookup you already ran. If the operator denies a proposed action, report the denial as an operator decision and do not invent a reason for it. After a few tool calls, stop and give your best concise answer.")
+	b.WriteString(" Do not repeat a lookup you already ran. If the operator denies a proposed action, report the denial as an operator decision and do not invent a reason for it. If an approved action executes, re-run the check that motivated it and state whether the symptom cleared. After a few tool calls, stop and give your best concise answer.")
+	b.WriteString(" End your final answer with a fenced json block of exactly this shape:\n```json\n{\"verdict\":\"healthy\",\"summary\":\"<one line>\",\"evidence\":[\"<item>\"]}\n```\nverdict must be healthy, attention, or action. Use healthy only when nothing needs attention.")
 	return b.String()
 }
 

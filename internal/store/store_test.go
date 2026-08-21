@@ -231,3 +231,26 @@ func TestStatusIsDerivedFromLastEvent(t *testing.T) {
 		}
 	}
 }
+
+func TestParseVerdict(t *testing.T) {
+	fenced := func(verdict, summary string) string {
+		return "prose before\n```json\n{\"verdict\":\"" + verdict + "\",\"summary\":\"" + summary + "\",\"evidence\":[]}\n```\n"
+	}
+	if got := ParseVerdict(fenced("healthy", "first") + fenced("action", "second")); got == nil || got.Verdict != "action" || got.Summary != "second" {
+		t.Fatalf("last block should win: %+v", got)
+	}
+	if got := ParseVerdict(fenced("healthy", "ok")); got == nil || got.Verdict != "healthy" {
+		t.Fatalf("healthy verdict: %+v", got)
+	}
+	for name, answer := range map[string]string{
+		"unknown verdict":    fenced("fine", "x"),
+		"uppercase rejected": fenced("HEALTHY", "x"),
+		"unterminated block": "```json\n{\"verdict\":\"healthy\"",
+		"bad json":           "```json\nnot json\n```",
+		"no block":           "just prose",
+	} {
+		if got := ParseVerdict(answer); got != nil {
+			t.Fatalf("%s: expected nil, got %+v", name, got)
+		}
+	}
+}

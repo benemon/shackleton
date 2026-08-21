@@ -149,7 +149,7 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 			status = "failed"
 			_ = investigation.Append(store.EventFailed, store.FailedPayload{Reason: runErr.Error(), Metrics: metrics})
 		} else {
-			_ = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Metrics: metrics})
+			_ = investigation.Append(store.EventCompleted, store.CompletedPayload{Answer: metrics.Answer, Verdict: store.ParseVerdict(metrics.Answer), Metrics: metrics})
 		}
 		_ = investigation.Close()
 		class := triggerClass(trigger)

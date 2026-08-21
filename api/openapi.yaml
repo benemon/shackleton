@@ -379,8 +379,24 @@ components:
       properties:
         answer:
           type: string
+        verdict:
+          $ref: '#/components/schemas/Verdict'
         metrics:
           $ref: '#/components/schemas/Metrics'
+    Verdict:
+      type: object
+      additionalProperties: false
+      required: [verdict, summary, evidence]
+      properties:
+        verdict:
+          type: string
+          enum: [healthy, attention, action]
+        summary:
+          type: string
+        evidence:
+          type: array
+          items:
+            type: string
     FailedPayload:
       type: object
       additionalProperties: false

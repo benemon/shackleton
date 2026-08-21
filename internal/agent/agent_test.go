@@ -64,6 +64,16 @@ func TestSystemPrompt(t *testing.T) {
 	if !strings.Contains(got, "The gated tools run_host_command and run_kubectl_command are for APPLYING an approved change") {
 		t.Errorf("gated tool sentence missing: %q", got)
 	}
+	if !strings.Contains(got, "re-run the check that motivated it and state whether the symptom cleared") {
+		t.Errorf("verification sentence missing: %q", got)
+	}
+	if !strings.Contains(got, "End your final answer with a fenced json block") || !strings.Contains(got, `{"verdict":"healthy","summary":"<one line>","evidence":["<item>"]}`) {
+		t.Errorf("verdict contract missing: %q", got)
+	}
+	got = SystemPrompt("", nil, nil, []string{"run_host_command"})
+	if !strings.Contains(got, "The gated tool run_host_command is for APPLYING an approved change") {
+		t.Errorf("singular gated sentence wrong: %q", got)
+	}
 	got = SystemPrompt("", nil, nil, nil)
 	if !strings.HasPrefix(got, "You are an infrastructure investigation agent. ") {
 		t.Errorf("default preamble missing: %q", got)

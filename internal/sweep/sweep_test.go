@@ -73,8 +73,9 @@ func TestHealthyVerdictIsSilent(t *testing.T) {
 	if len(investigations) != 1 || investigations[0].Trigger != "sweep:node-fs" {
 		t.Fatalf("investigations = %+v", investigations)
 	}
-	if !strings.Contains(investigations[0].Question, "check") || !strings.Contains(investigations[0].Question, "fenced json block") {
-		t.Fatalf("scaffold not appended: %q", investigations[0].Question)
+	// The verdict contract lives in the system prompt now, not the question.
+	if investigations[0].Question != "check" {
+		t.Fatalf("question should be unmodified: %q", investigations[0].Question)
 	}
 }
 
@@ -118,26 +119,4 @@ func TestNotifierErrorAndNilNotifierDoNotEscape(t *testing.T) {
 	runSweep(context.Background(), svc, &fakeNotifier{err: errors.New("telegram down")}, config.Sweep{Name: "s", Question: "q"})
 	svc = testService(t, fenced("action", "restart it", ""), nil)
 	runSweep(context.Background(), svc, nil, config.Sweep{Name: "s", Question: "q"})
-}
-
-func TestParseVerdict(t *testing.T) {
-	cases := []struct {
-		name    string
-		answer  string
-		verdict string
-		summary string
-	}{
-		{"last block wins", fenced("healthy", "first", "") + fenced("action", "second", ""), "action", "second"},
-		{"unknown verdict", fenced("fine", "x", ""), "attention", "verdict unparseable"},
-		{"uppercase rejected", fenced("HEALTHY", "x", ""), "attention", "verdict unparseable"},
-		{"unterminated block", "```json\n{\"verdict\":\"healthy\"", "attention", "verdict unparseable"},
-		{"bad json", "```json\nnot json\n```", "attention", "verdict unparseable"},
-		{"healthy", fenced("healthy", "ok", ""), "healthy", "ok"},
-	}
-	for _, test := range cases {
-		got := parseVerdict(test.answer)
-		if got.Verdict != test.verdict || got.Summary != test.summary {
-			t.Fatalf("%s: got %+v", test.name, got)
-		}
-	}
 }
