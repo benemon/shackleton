@@ -47,9 +47,14 @@ func testConfig(t *testing.T) *config.Config {
 	t.Setenv("SERVICE_MCP_SECRET", "known-mcp-secret")
 	t.Setenv("SERVICE_PROM_SECRET", "known-prometheus-secret")
 	t.Setenv("SERVICE_API_SECRET", "known-api-secret")
+	t.Setenv("SERVICE_BOT_SECRET", "known-bot-secret")
+	t.Setenv("SERVICE_CHAT_SECRET", "known-chat-secret")
 	path := filepath.Join(t.TempDir(), "shackleton.yaml")
 	contents := `
 listen: "127.0.0.1:8420"
+tls:
+  cert_file: /etc/shackleton/server.pem
+  key_file: /etc/shackleton/server.pem
 state_dir: /tmp/shackleton
 model:
   base_url: https://model.example/v1
@@ -64,8 +69,19 @@ metrics_sources:
     type: prometheus
     url: https://prometheus.example
     auth_header: {env: SERVICE_PROM_SECRET}
+notifications:
+  - name: notifications
+    type: telegram
+    bot_token: {env: SERVICE_BOT_SECRET}
+    chat_id: {env: SERVICE_CHAT_SECRET}
+approvals:
+  - name: approvals
+    type: telegram
+    bot_token: {env: SERVICE_BOT_SECRET}
+    chat_id: {env: SERVICE_CHAT_SECRET}
 gated_tools: [run_host_command]
 agent:
+  prompt: Test operator prompt
   max_rounds: 4
   call_timeout: 17s
   investigation_timeout: 3m
@@ -116,7 +132,7 @@ func approvalRunnerFactory(t *testing.T) RunnerFactory {
 			Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
 				completion++
 				if completion == 1 {
-					return agent.ModelMessage{ToolCalls: []agent.ModelToolCall{{Name: "repair", Arguments: `{}`, ID: "call"}}}, nil
+					return agent.ModelMessage{ToolCalls: []agent.ModelToolCall{{Name: "repair", Arguments: `{"target":"node1"}`, ID: "call"}}}, nil
 				}
 				return agent.ModelMessage{Content: "done"}, nil
 			},
@@ -354,9 +370,23 @@ func TestHTTPApprovalDecisionRecordsAPIVia(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("pending approvals = %+v", pending)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/approvals/"+pending[0].ID+"/decision", strings.NewReader(`{"approved":true,"via":"telegram"}`))
+	request := httptest.NewRequest(http.MethodGet, "/v1/approvals", nil)
 	request.Header.Set("Authorization", "Bearer token")
 	response := httptest.NewRecorder()
+	NewHTTP(service, "token").ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var listed []PendingApproval
+	if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ArgsJSON != `{"target":"node1"}` {
+		t.Fatalf("listed approvals = %+v", listed)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/v1/approvals/"+pending[0].ID+"/decision", strings.NewReader(`{"approved":true,"via":"telegram"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
 	NewHTTP(service, "token").ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || len(service.ListPendingApprovals()) != 1 {
 		t.Fatalf("client-supplied via status = %d, body = %s", response.Code, response.Body.String())
@@ -400,12 +430,18 @@ func TestConfigHTTPResponseContainsRefsAndNoSecretValues(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, secret := range []string{"known-model-secret", "known-mcp-secret", "known-prometheus-secret", "known-api-secret"} {
+	if !strings.Contains(body, `"tls":{"cert_file":"/etc/shackleton/server.pem","key_file":"/etc/shackleton/server.pem"}`) {
+		t.Fatalf("config response omitted TLS paths: %s", body)
+	}
+	if !strings.Contains(body, `"prompt":"Test operator prompt"`) {
+		t.Fatalf("config response omitted agent prompt: %s", body)
+	}
+	for _, secret := range []string{"known-model-secret", "known-mcp-secret", "known-prometheus-secret", "known-api-secret", "known-bot-secret", "known-chat-secret"} {
 		if strings.Contains(body, secret) {
 			t.Fatalf("config response leaked %q: %s", secret, body)
 		}
 	}
-	for _, ref := range []string{"SERVICE_MODEL_SECRET", "SERVICE_MCP_SECRET", "SERVICE_PROM_SECRET", "SERVICE_API_SECRET"} {
+	for _, ref := range []string{"SERVICE_MODEL_SECRET", "SERVICE_MCP_SECRET", "SERVICE_PROM_SECRET", "SERVICE_API_SECRET", "SERVICE_BOT_SECRET", "SERVICE_CHAT_SECRET"} {
 		if !strings.Contains(body, ref) {
 			t.Fatalf("config response omitted ref %q: %s", ref, body)
 		}

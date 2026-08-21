@@ -1,129 +1,195 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
+  Badge,
   Button,
-  Card,
-  CardBody,
   Form,
   FormGroup,
-  Masthead,
-  MastheadContent,
-  MastheadMain,
   Nav,
+  NavExpandable,
   NavItem,
   NavList,
-  Page,
-  PageSection,
-  PageSidebar,
-  PageSidebarBody,
   TextInput,
   Title,
 } from '@patternfly/react-core';
-import { clearToken, getToken, setToken } from './api';
-import { Investigations } from './pages/Investigations';
+import {
+  BellIcon,
+  BookIcon,
+  CogIcon,
+  CubesIcon,
+  HomeAltIcon,
+  SearchIcon,
+} from '@patternfly/react-icons';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { api, clearToken, getToken, setToken, type ConfigView, type Health } from './api';
+import { Panel } from './components';
+import { AdminChannels, AdminMetrics, AdminPlatform, AdminSweeps, AdminTools } from './pages/Admin';
 import { Approvals } from './pages/Approvals';
+import { InvestigationDetail, Investigations } from './pages/Investigations';
 import { Inventory } from './pages/Inventory';
-import { KB } from './pages/KB';
-import { Config } from './pages/Config';
-
-type Section = 'investigations' | 'approvals' | 'kb' | 'inventory' | 'config';
+import { KB, KBArticle } from './pages/KB';
+import { Overview } from './pages/Overview';
 
 function TokenGate({ onSet }: { onSet: () => void }) {
   const [value, setValue] = useState('');
   return (
-    <Page>
-      <PageSection>
-        <Card style={{ maxWidth: 480, margin: '10vh auto' }}>
-          <CardBody>
+    <main className="token-gate">
+      <Panel className="token-gate__panel">
+        <div className="panel__body stack">
+          <div>
             <Title headingLevel="h1">Shackleton</Title>
-            <Form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (value.trim() !== '') {
-                  setToken(value.trim());
-                  onSet();
-                }
-              }}
+            <p className="subtle">Connect to the daemon console.</p>
+          </div>
+          <Form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (value.trim() !== '') {
+                setToken(value.trim());
+                onSet();
+              }
+            }}
+          >
+            <FormGroup label="API token" fieldId="token">
+              <TextInput
+                id="token"
+                type="password"
+                value={value}
+                onChange={(_event, next) => setValue(next)}
+                aria-label="API token"
+              />
+            </FormGroup>
+            <Button type="submit" variant="primary">
+              Connect
+            </Button>
+          </Form>
+        </div>
+      </Panel>
+    </main>
+  );
+}
+
+type NavEntry = { path: string; label: string; icon?: React.ReactNode };
+
+const primaryNavigation: NavEntry[] = [
+  { path: '/', label: 'Overview', icon: <HomeAltIcon /> },
+  { path: '/investigations', label: 'Investigations', icon: <SearchIcon /> },
+  { path: '/approvals', label: 'Approvals', icon: <BellIcon /> },
+  { path: '/kb', label: 'Knowledge base', icon: <BookIcon /> },
+  { path: '/inventory', label: 'Inventory', icon: <CubesIcon /> },
+];
+
+const administrationNavigation: NavEntry[] = [
+  { path: '/admin/platform', label: 'Platform' },
+  { path: '/admin/tools', label: 'Tool servers' },
+  { path: '/admin/metrics', label: 'Metrics sources' },
+  { path: '/admin/channels', label: 'Channels' },
+  { path: '/admin/sweeps', label: 'Sweeps' },
+];
+
+function Console() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [health, setHealth] = useState<Health | null>(null);
+  const [config, setConfig] = useState<ConfigView | null>(null);
+  const [approvalCount, setApprovalCount] = useState(0);
+  const [administrationExpanded, setAdministrationExpanded] = useState(true);
+
+  useEffect(() => {
+    const refreshApprovals = () => api.listApprovals().then((items) => setApprovalCount(items.length), () => undefined);
+    api.getHealth().then(setHealth, () => undefined);
+    api.getConfig().then(setConfig, () => undefined);
+    refreshApprovals();
+    const timer = window.setInterval(refreshApprovals, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const isActive = (path: string) =>
+    path === '/'
+      ? location.pathname === '/'
+      : location.pathname === path || location.pathname.startsWith(`${path}/`);
+
+  return (
+    <div className="console-shell">
+      <header className="console-header">
+        <div className="console-wordmark">Shackleton</div>
+        <div className="console-daemon">
+          <span className={`status-dot ${health?.status === 'ok' ? 'status-dot--ok' : ''}`} />
+          <span>
+            {health?.status ?? 'connecting'} · {config?.model.name ?? 'loading model'}
+          </span>
+        </div>
+        <div className="console-header__actions">
+          <Button
+            variant="link"
+            onClick={() => {
+              clearToken();
+              window.location.reload();
+            }}
+          >
+            Disconnect
+          </Button>
+        </div>
+      </header>
+      <aside className="console-sidebar">
+        <Nav aria-label="Console navigation">
+          <NavList>
+            {primaryNavigation.map((entry) => (
+              <NavItem
+                key={entry.path}
+                itemId={entry.path}
+                isActive={isActive(entry.path)}
+                onClick={() => navigate(entry.path)}
+                icon={entry.icon}
+              >
+                <span className="nav-item-content">
+                  {entry.label}
+                  {entry.path === '/approvals' && approvalCount > 0 && <Badge>{approvalCount}</Badge>}
+                </span>
+              </NavItem>
+            ))}
+            <NavExpandable
+              title="Administration"
+              icon={<CogIcon />}
+              isExpanded={administrationExpanded}
+              isActive={location.pathname.startsWith('/admin/')}
+              onExpand={(_event, expanded) => setAdministrationExpanded(expanded)}
             >
-              <FormGroup label="API token" fieldId="token">
-                <TextInput
-                  id="token"
-                  type="password"
-                  value={value}
-                  onChange={(_e, v) => setValue(v)}
-                  aria-label="API token"
-                />
-              </FormGroup>
-              <Button type="submit" variant="primary">
-                Connect
-              </Button>
-            </Form>
-          </CardBody>
-        </Card>
-      </PageSection>
-    </Page>
+              {administrationNavigation.map((entry) => (
+                <NavItem
+                  key={entry.path}
+                  itemId={entry.path}
+                  isActive={isActive(entry.path)}
+                  onClick={() => navigate(entry.path)}
+                >
+                  {entry.label}
+                </NavItem>
+              ))}
+            </NavExpandable>
+          </NavList>
+        </Nav>
+      </aside>
+      <main className="console-main">
+        <Routes>
+          <Route path="/" element={<Overview />} />
+          <Route path="/investigations" element={<Investigations />} />
+          <Route path="/investigations/:id" element={<InvestigationDetail />} />
+          <Route path="/approvals" element={<Approvals />} />
+          <Route path="/kb" element={<KB />} />
+          <Route path="/kb/:slug" element={<KBArticle />} />
+          <Route path="/inventory" element={<Inventory />} />
+          <Route path="/admin/platform" element={<AdminPlatform />} />
+          <Route path="/admin/tools" element={<AdminTools />} />
+          <Route path="/admin/metrics" element={<AdminMetrics />} />
+          <Route path="/admin/channels" element={<AdminChannels />} />
+          <Route path="/admin/sweeps" element={<AdminSweeps />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
+    </div>
   );
 }
 
 export function App() {
   const [authed, setAuthed] = useState(getToken() !== null);
-  const [section, setSection] = useState<Section>('investigations');
-
   if (!authed) return <TokenGate onSet={() => setAuthed(true)} />;
-
-  const masthead = (
-    <Masthead>
-      <MastheadMain>
-        <Title headingLevel="h1" style={{ padding: '0.5rem 1rem' }}>
-          Shackleton
-        </Title>
-      </MastheadMain>
-      <MastheadContent>
-        <Button
-          variant="link"
-          onClick={() => {
-            clearToken();
-            setAuthed(false);
-          }}
-        >
-          Disconnect
-        </Button>
-      </MastheadContent>
-    </Masthead>
-  );
-
-  const sidebar = (
-    <PageSidebar>
-      <PageSidebarBody>
-        <Nav>
-          <NavList>
-            <NavItem itemId="investigations" isActive={section === 'investigations'} onClick={() => setSection('investigations')}>
-              Investigations
-            </NavItem>
-            <NavItem itemId="approvals" isActive={section === 'approvals'} onClick={() => setSection('approvals')}>
-              Approvals
-            </NavItem>
-            <NavItem itemId="kb" isActive={section === 'kb'} onClick={() => setSection('kb')}>
-              Knowledge base
-            </NavItem>
-            <NavItem itemId="inventory" isActive={section === 'inventory'} onClick={() => setSection('inventory')}>
-              Inventory
-            </NavItem>
-            <NavItem itemId="config" isActive={section === 'config'} onClick={() => setSection('config')}>
-              Config
-            </NavItem>
-          </NavList>
-        </Nav>
-      </PageSidebarBody>
-    </PageSidebar>
-  );
-
-  return (
-    <Page masthead={masthead} sidebar={sidebar}>
-      {section === 'investigations' && <Investigations />}
-      {section === 'approvals' && <Approvals />}
-      {section === 'kb' && <KB />}
-      {section === 'inventory' && <Inventory />}
-      {section === 'config' && <Config />}
-    </Page>
-  );
+  return <Console />;
 }

@@ -35,6 +35,7 @@ type PendingApproval struct {
 	CallID          string    `json:"call_id"`
 	Name            string    `json:"name"`
 	Human           string    `json:"human"`
+	ArgsJSON        string    `json:"args_json"`
 	RequestedAt     time.Time `json:"requested_at"`
 }
 
@@ -61,6 +62,12 @@ type ConfigView struct {
 	Agent          AgentView        `json:"agent"`
 	Sweeps         []SweepView      `json:"sweeps"`
 	APIToken       config.SecretRef `json:"api_token"`
+	TLS            TLSView          `json:"tls"`
+}
+
+type TLSView struct {
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
 }
 
 type SweepView struct {
@@ -89,11 +96,14 @@ type SourceView struct {
 }
 
 type ChannelView struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name     string           `json:"name"`
+	Type     string           `json:"type"`
+	BotToken config.SecretRef `json:"bot_token"`
+	ChatID   config.SecretRef `json:"chat_id"`
 }
 
 type AgentView struct {
+	Prompt               string `json:"prompt"`
 	MaxRounds            int    `json:"max_rounds"`
 	MaxToolResultChars   int    `json:"max_tool_result_chars"`
 	CallTimeout          string `json:"call_timeout"`
@@ -657,7 +667,10 @@ func (s *Service) ConfigView() ConfigView {
 	channelViews := func(channels []config.Channel) []ChannelView {
 		views := make([]ChannelView, 0, len(channels))
 		for _, channel := range channels {
-			views = append(views, ChannelView{Name: channel.Name, Type: channel.Type})
+			views = append(views, ChannelView{
+				Name: channel.Name, Type: channel.Type,
+				BotToken: channel.BotToken.Ref(), ChatID: channel.ChatID.Ref(),
+			})
 		}
 		return views
 	}
@@ -668,9 +681,10 @@ func (s *Service) ConfigView() ConfigView {
 		MetricsSources: metrics, LogsSources: logs,
 		Notifications: channelViews(cfg.Notifications), Approvals: channelViews(cfg.Approvals),
 		GatedTools: append([]string{}, cfg.GatedTools...),
-		Agent: AgentView{MaxRounds: cfg.Agent.MaxRounds, MaxToolResultChars: cfg.Agent.MaxToolResultChars,
+		Agent: AgentView{Prompt: cfg.Agent.Prompt, MaxRounds: cfg.Agent.MaxRounds, MaxToolResultChars: cfg.Agent.MaxToolResultChars,
 			CallTimeout: cfg.Agent.CallTimeout.Duration().String(), InvestigationTimeout: cfg.Agent.InvestigationTimeout.Duration().String()},
 		APIToken: cfg.APIToken.Ref(),
+		TLS:      TLSView{CertFile: cfg.TLS.CertFile, KeyFile: cfg.TLS.KeyFile},
 	}
 }
 
@@ -744,7 +758,7 @@ func (s *Service) addPending(investigationID string, call agent.ToolCall) (*pend
 		}
 		pending := &pendingApproval{PendingApproval: PendingApproval{
 			ID: id, InvestigationID: investigationID, CallID: call.ID, Name: call.Name,
-			Human: call.Human, RequestedAt: time.Now().UTC(),
+			Human: call.Human, ArgsJSON: call.ArgsJSON, RequestedAt: time.Now().UTC(),
 		}, decision: make(chan agent.Decision, 1)}
 		s.mu.Lock()
 		_, wasDecided := s.decided[id]

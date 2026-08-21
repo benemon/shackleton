@@ -9,6 +9,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 //go:embed all:dist
@@ -19,5 +20,11 @@ func Handler() http.Handler {
 	if err != nil {
 		panic(err)
 	}
-	return http.FileServerFS(sub)
+	files := http.FileServerFS(sub)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" && !strings.Contains(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], ".") {
+			r.URL.Path = "/"
+		}
+		files.ServeHTTP(w, r)
+	})
 }

@@ -9,12 +9,24 @@ export type ConfigView = components['schemas']['ConfigView'];
 export type Inventory = components['schemas']['Inventory'];
 export type Verdict = components['schemas']['Verdict'];
 export type KBArticleMeta = components['schemas']['KBArticleMeta'];
+export type AuditEntry = components['schemas']['AuditEntry'];
+export type Health = components['schemas']['Health'];
+export type SecretRef = components['schemas']['SecretRef'];
 
 const TOKEN_KEY = 'shackleton-token';
 
 export const getToken = () => sessionStorage.getItem(TOKEN_KEY);
 export const setToken = (t: string) => sessionStorage.setItem(TOKEN_KEY, t);
 export const clearToken = () => sessionStorage.removeItem(TOKEN_KEY);
+
+export class APIError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -28,7 +40,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error ?? res.statusText);
+    throw new APIError(body.error ?? res.statusText, res.status);
   }
   return res.json() as Promise<T>;
 }
@@ -50,6 +62,8 @@ export const api = {
       body: JSON.stringify({ approved }),
     }),
   getConfig: () => request<ConfigView>('/v1/config'),
+  getHealth: () => request<Health>('/v1/health'),
+  getAudit: () => request<AuditEntry[]>('/v1/audit'),
   getInventory: () => request<Inventory>('/v1/inventory'),
   listKB: () => request<KBArticleMeta[]>('/v1/kb'),
   // Raw markdown, not JSON.
@@ -57,7 +71,12 @@ export const api = {
     const res = await fetch(`/v1/kb/${encodeURIComponent(slug)}`, {
       headers: { Authorization: `Bearer ${getToken() ?? ''}` },
     });
-    if (!res.ok) throw new Error(res.statusText);
+    if (res.status === 401) {
+      clearToken();
+      window.location.reload();
+      throw new APIError('unauthorized', res.status);
+    }
+    if (!res.ok) throw new APIError(res.statusText, res.status);
     return res.text();
   },
 };

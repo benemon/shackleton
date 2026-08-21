@@ -1,0 +1,421 @@
+:root {
+  font-family: "Red Hat Text", system-ui, sans-serif;
+  color: var(--pf-t--global--text--color--regular);
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--pf-t--global--background--color--200);
+}
+
+.token-gate {
+  display: grid;
+  min-height: 100vh;
+  padding: 24px;
+  place-items: center;
+}
+
+.token-gate__panel {
+  width: min(480px, 100%);
+}
+
+.console-shell {
+  display: flex;
+  flex-wrap: wrap;
+  min-height: 100vh;
+}
+
+.console-header {
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  flex: 0 0 100%;
+  height: 69px;
+  gap: 24px;
+  padding: 0 24px;
+  background: var(--pf-t--global--background--color--200);
+}
+
+.console-wordmark {
+  font-family: "Red Hat Display", "Red Hat Text", system-ui, sans-serif;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.console-daemon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pf-t--global--text--color--subtle);
+  font-size: 13px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pf-t--global--color--nonstatus--gray--300);
+}
+
+.status-dot--ok {
+  background: var(--pf-t--global--color--status--success--default);
+}
+
+.console-header__actions {
+  margin-left: auto;
+}
+
+.console-sidebar {
+  width: 240px;
+  flex: 0 0 240px;
+  height: calc(100vh - 69px);
+  min-height: 0;
+  padding: 20px 12px;
+  overflow: auto;
+  background: var(--pf-t--global--background--color--100);
+  box-shadow: inset -1px 0 0 var(--pf-t--global--border--color--200);
+}
+
+.console-sidebar .pf-v6-c-nav__link {
+  border-radius: 8px;
+}
+
+.nav-item-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.console-main {
+  flex: 1;
+  height: calc(100vh - 69px);
+  min-width: 0;
+  overflow: auto;
+  background: var(--pf-t--global--background--color--200);
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 32px;
+}
+
+.page-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: -32px -32px 0;
+  padding: 24px 32px;
+  background: var(--pf-t--global--background--color--100);
+  border-block-end: 1px solid var(--pf-t--global--border--color--200);
+}
+
+.page-header h1 {
+  font-size: 22px;
+}
+
+.page-header h1,
+.panel h2,
+.panel h3,
+.approval-card h2 {
+  font-family: "Red Hat Display", "Red Hat Text", system-ui, sans-serif;
+}
+
+.page-header__eyebrow,
+.page-header__subtitle,
+.subtle {
+  color: var(--pf-t--global--text--color--subtle);
+}
+
+.page-header__eyebrow {
+  font-size: 13px;
+}
+
+.panel {
+  overflow: hidden;
+  background: var(--pf-t--global--background--color--100);
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px var(--pf-t--global--border--color--200);
+}
+
+.panel__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 0 24px;
+  border-block-end: 1px solid var(--pf-t--global--border--color--200);
+  font-weight: 500;
+}
+
+.panel__header-aside {
+  margin-left: auto;
+  color: var(--pf-t--global--text--color--subtle);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.panel__body {
+  padding: 24px;
+}
+
+.panel__body--flush {
+  padding: 0;
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.panel-grid .panel--wide {
+  grid-column: 1 / -1;
+}
+
+.mono {
+  font-family: "Red Hat Mono VF", "Red Hat Mono", ui-monospace, monospace;
+}
+
+.mono--small {
+  font-size: 12px;
+}
+
+.inline-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.stack--tight {
+  gap: 8px;
+}
+
+.page-loading {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+}
+
+.ask-form {
+  display: flex;
+  gap: 12px;
+  padding: 8px;
+}
+
+.ask-form .pf-v6-c-form-control {
+  flex: 1;
+}
+
+.item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 0;
+  border-block-end: 1px solid var(--pf-t--global--border--color--200);
+}
+
+.item-row:first-child {
+  padding-top: 0;
+}
+
+.item-row:last-child {
+  padding-bottom: 0;
+  border-block-end: 0;
+}
+
+.item-row__content {
+  min-width: 0;
+  flex: 1;
+}
+
+.panel-footnote {
+  margin-top: 16px;
+  color: var(--pf-t--global--text--color--subtle);
+  font-size: 13px;
+}
+
+.panel__section-title {
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.table-link {
+  color: inherit;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.table-link:hover {
+  color: var(--pf-t--global--color--brand--default);
+  text-decoration: underline;
+}
+
+.event-detail,
+.answer-text,
+.mono-pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mono-pre {
+  margin: 12px 0 0;
+  padding: 16px;
+  border-radius: 6px;
+  background: var(--pf-t--global--background--color--200);
+  font-family: "Red Hat Mono VF", "Red Hat Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--pf-t--global--text--color--subtle);
+}
+
+.evidence-list {
+  margin: 16px 0 0;
+  padding-left: 20px;
+}
+
+.evidence-list li + li {
+  margin-top: 8px;
+}
+
+.drawer-panel {
+  height: 100%;
+  padding: 24px;
+  overflow: auto;
+  background: var(--pf-t--global--background--color--100);
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 14px 0;
+  border-block-end: 1px solid var(--pf-t--global--border--color--200);
+}
+
+.event-row__time {
+  color: var(--pf-t--global--text--color--subtle);
+  font-size: 12px;
+}
+
+.event-row__detail {
+  grid-column: 1 / -1;
+  font-size: 12px;
+}
+
+.approval-card {
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--pf-t--global--background--color--100);
+  box-shadow: inset 0 0 0 1px var(--pf-t--global--border--color--200);
+}
+
+.approval-card__header,
+.approval-card__body {
+  padding: 18px 24px;
+}
+
+.approval-card__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-block-end: 1px solid var(--pf-t--global--border--color--200);
+}
+
+.approval-card__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+}
+
+.article-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 24px;
+  align-items: start;
+}
+
+.article-content {
+  padding: 32px;
+}
+
+.article-content h1,
+.article-content h2 {
+  font-family: "Red Hat Display", "Red Hat Text", system-ui, sans-serif;
+}
+
+.article-content h1:first-child {
+  margin-top: 0;
+}
+
+.markdown-list-item {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.inert-panel {
+  color: var(--pf-t--global--text--color--subtle);
+}
+
+.admin-note {
+  margin-top: -8px;
+}
+
+.description-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+@media (max-width: 900px) {
+  .console-shell {
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+
+  .console-sidebar {
+    width: 100%;
+    flex-basis: auto;
+    height: auto;
+    box-shadow: inset 0 -1px 0 var(--pf-t--global--border--color--200);
+  }
+
+  .console-main {
+    height: auto;
+  }
+
+  .panel-grid,
+  .article-layout,
+  .description-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-grid .panel--wide {
+    grid-column: auto;
+  }
+}

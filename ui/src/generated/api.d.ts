@@ -350,6 +350,7 @@ export interface components {
             call_id: string;
             name: string;
             human: string;
+            args_json: string;
             /** Format: date-time */
             requested_at: string;
         };
@@ -376,6 +377,8 @@ export interface components {
         ChannelView: {
             name: string;
             type: string;
+            bot_token: components["schemas"]["SecretRef"];
+            chat_id: components["schemas"]["SecretRef"];
         };
         SourceView: {
             name: string;
@@ -437,6 +440,10 @@ export interface components {
             kb_dir: string;
             inventory_dir: string;
             env_files: string[];
+            tls: {
+                cert_file: string;
+                key_file: string;
+            };
             model: {
                 base_url: string;
                 name: string;
@@ -453,6 +460,7 @@ export interface components {
             notifications: components["schemas"]["ChannelView"][];
             approvals: components["schemas"]["ChannelView"][];
             agent: {
+                prompt: string;
                 max_rounds: number;
                 max_tool_result_chars: number;
                 call_timeout: string;

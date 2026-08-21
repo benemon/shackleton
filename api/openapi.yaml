@@ -528,7 +528,7 @@ components:
     PendingApproval:
       type: object
       additionalProperties: false
-      required: [id, investigation_id, call_id, name, human, requested_at]
+      required: [id, investigation_id, call_id, name, human, args_json, requested_at]
       properties:
         id:
           type: string
@@ -539,6 +539,8 @@ components:
         name:
           type: string
         human:
+          type: string
+        args_json:
           type: string
         requested_at:
           type: string
@@ -592,12 +594,16 @@ components:
     ChannelView:
       type: object
       additionalProperties: false
-      required: [name, type]
+      required: [name, type, bot_token, chat_id]
       properties:
         name:
           type: string
         type:
           type: string
+        bot_token:
+          $ref: '#/components/schemas/SecretRef'
+        chat_id:
+          $ref: '#/components/schemas/SecretRef'
     SourceView:
       type: object
       additionalProperties: false
@@ -724,7 +730,7 @@ components:
     ConfigView:
       type: object
       additionalProperties: false
-      required: [listen, state_dir, kb_dir, inventory_dir, env_files, model, mcp_servers, metrics_sources, logs_sources, gated_tools, notifications, approvals, agent, sweeps, api_token]
+      required: [listen, state_dir, kb_dir, inventory_dir, env_files, model, mcp_servers, metrics_sources, logs_sources, gated_tools, notifications, approvals, agent, sweeps, api_token, tls]
       properties:
         listen:
           type: string
@@ -738,6 +744,15 @@ components:
           type: array
           items:
             type: string
+        tls:
+          type: object
+          additionalProperties: false
+          required: [cert_file, key_file]
+          properties:
+            cert_file:
+              type: string
+            key_file:
+              type: string
         model:
           type: object
           additionalProperties: false
@@ -785,8 +800,10 @@ components:
         agent:
           type: object
           additionalProperties: false
-          required: [max_rounds, max_tool_result_chars, call_timeout, investigation_timeout]
+          required: [prompt, max_rounds, max_tool_result_chars, call_timeout, investigation_timeout]
           properties:
+            prompt:
+              type: string
             max_rounds:
               type: integer
             max_tool_result_chars:
