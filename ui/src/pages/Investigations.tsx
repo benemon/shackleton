@@ -9,9 +9,12 @@ import {
   EmptyState,
   EmptyStateBody,
   Label,
+  SearchInput,
   Tab,
   Tabs,
   TabTitleText,
+  ToggleGroup,
+  ToggleGroupItem,
 } from '@patternfly/react-core';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -276,6 +279,9 @@ export function Investigations() {
   const navigate = useNavigate();
   const [items, setItems] = useState<Summary[] | null>(null);
   const [tab, setTab] = useState<'questions' | 'sweeps'>('questions');
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [verdictFilter, setVerdictFilter] = useState<string[]>([]);
   const [error, setError] = useState('');
 
   const refresh = useCallback(() => {
@@ -290,10 +296,30 @@ export function Investigations() {
 
   const questions = items?.filter((item) => !item.trigger.startsWith('sweep')) ?? [];
   const sweeps = items?.filter((item) => item.trigger.startsWith('sweep')) ?? [];
-  const visible = tab === 'questions' ? questions : sweeps;
+  const tabItems = tab === 'questions' ? questions : sweeps;
+  const normalizedQuery = query.trim().toLowerCase();
+  const visible = tabItems.filter((item) => {
+    if (normalizedQuery !== '' && !item.question.toLowerCase().includes(normalizedQuery)) return false;
+    if (statusFilter.length > 0 && !statusFilter.includes(item.status)) return false;
+    const verdict = item.verdict?.verdict ?? 'none';
+    return verdictFilter.length === 0 || verdictFilter.includes(verdict);
+  });
+  const filtersActive = query !== '' || statusFilter.length > 0 || verdictFilter.length > 0;
+
+  const toggleStatus = (status: string, selected: boolean) => {
+    setStatusFilter((current) => selected ? [...current, status] : current.filter((item) => item !== status));
+  };
+  const toggleVerdict = (verdict: string, selected: boolean) => {
+    setVerdictFilter((current) => selected ? [...current, verdict] : current.filter((item) => item !== verdict));
+  };
+  const clearFilters = () => {
+    setQuery('');
+    setStatusFilter([]);
+    setVerdictFilter([]);
+  };
 
   return (
-    <div className="page">
+    <div className="page page--flush page--tabs">
       <PageHeader
         title="Investigations"
         subtitle="Questions, alerts, and scheduled sweeps recorded by the daemon."
@@ -303,7 +329,7 @@ export function Investigations() {
           {error}
         </Alert>
       )}
-      <Panel>
+      <div className="tab-strip">
         <Tabs
           activeKey={tab}
           onSelect={(_event, key) => setTab(String(key) === 'sweeps' ? 'sweeps' : 'questions')}
@@ -312,9 +338,62 @@ export function Investigations() {
           <Tab eventKey="questions" title={<TabTitleText>Questions ({questions.length})</TabTitleText>} />
           <Tab eventKey="sweeps" title={<TabTitleText>Sweeps ({sweeps.length})</TabTitleText>} />
         </Tabs>
+      </div>
+      <div className="filter-toolbar">
+        <SearchInput
+          className="filter-toolbar__search"
+          value={query}
+          placeholder="Filter by question"
+          aria-label="Filter investigations by question"
+          onChange={(_event, value) => setQuery(value)}
+          onClear={() => setQuery('')}
+        />
+        <ToggleGroup isCompact aria-label="Filter investigations by status">
+          {['running', 'completed', 'failed'].map((status) => (
+            <ToggleGroupItem
+              key={status}
+              text={`${status[0].toUpperCase()}${status.slice(1)}`}
+              buttonId={`investigation-status-${status}`}
+              isSelected={statusFilter.includes(status)}
+              onChange={(_event, selected) => toggleStatus(status, selected)}
+            />
+          ))}
+        </ToggleGroup>
+        <ToggleGroup isCompact aria-label="Filter investigations by verdict">
+          {[
+            ['healthy', 'Healthy'],
+            ['attention', 'Attention'],
+            ['action', 'Action'],
+            ['none', 'No verdict'],
+          ].map(([verdict, label]) => (
+            <ToggleGroupItem
+              key={verdict}
+              text={label}
+              buttonId={`investigation-verdict-${verdict}`}
+              isSelected={verdictFilter.includes(verdict)}
+              onChange={(_event, selected) => toggleVerdict(verdict, selected)}
+            />
+          ))}
+        </ToggleGroup>
+        <div className="filter-toolbar__summary">
+          <span className="subtle">
+            {filtersActive
+              ? `${visible.length} of ${tabItems.length}`
+              : `${tabItems.length} ${tabItems.length === 1 ? 'item' : 'items'}`}
+          </span>
+          {filtersActive && (
+            <Button variant="link" isInline onClick={clearFilters}>Clear all filters</Button>
+          )}
+        </div>
+      </div>
+      <section className="flush-table">
         {items === null ? (
           error === '' && <PageLoading />
-        ) : visible.length === 0 ? (
+        ) : visible.length === 0 && filtersActive ? (
+          <EmptyState titleText="No investigations match these filters" headingLevel="h3" variant="sm">
+            <EmptyStateBody>Widen the state filters or clear the search.</EmptyStateBody>
+          </EmptyState>
+        ) : tabItems.length === 0 ? (
           <EmptyState titleText={tab === 'questions' ? 'No questions yet' : 'No sweeps yet'} headingLevel="h2" variant="sm">
             <EmptyStateBody>
               {tab === 'questions'
@@ -364,7 +443,7 @@ export function Investigations() {
             </Tbody>
           </Table>
         )}
-      </Panel>
+      </section>
     </div>
   );
 }

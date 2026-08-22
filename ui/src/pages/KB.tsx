@@ -125,7 +125,7 @@ export function KBArticle() {
         : 'The recorded resolution has not been verified yet.';
 
   return (
-    <div className="page">
+    <div className="page page--flush">
       {error !== '' && (
         <Alert variant="danger" title="Could not load the article">
           {error}
@@ -208,7 +208,7 @@ export function KB() {
           {error}
         </Alert>
       )}
-      <Panel>
+      <section className="flush-table">
         {articles === null ? (
           error === '' && <PageLoading />
         ) : articles.length === 0 ? (
@@ -249,7 +249,7 @@ export function KB() {
             </Tbody>
           </Table>
         )}
-      </Panel>
+      </section>
     </div>
   );
 }

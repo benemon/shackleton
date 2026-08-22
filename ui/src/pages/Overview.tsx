@@ -214,7 +214,7 @@ export function Overview() {
               </DescriptionListGroup>
               <DescriptionListGroup>
                 <DescriptionListTerm>Ignored</DescriptionListTerm>
-                <DescriptionListDescription>{ignored.length} dismissed</DescriptionListDescription>
+                <DescriptionListDescription>{ignored.length} — dismissed by an operator</DescriptionListDescription>
               </DescriptionListGroup>
             </DescriptionList>
           </div>

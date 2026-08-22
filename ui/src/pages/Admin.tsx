@@ -210,7 +210,7 @@ export function AdminTools() {
     <AdminState title="Tool servers" blurb={blurbs.tools} error={error} loading={data === null}>
       {data !== null && (
         <>
-          <Panel>
+          <section className="flush-table">
             <PanelHeader>MCP servers</PanelHeader>
             {data.config.mcp_servers.length === 0 ? (
               <div className="panel__body">No MCP servers configured.</div>
@@ -227,8 +227,8 @@ export function AdminTools() {
                 </Tbody>
               </Table>
             )}
-          </Panel>
-          <Panel>
+          </section>
+          <section className="flush-table">
             <PanelHeader>Gated tools</PanelHeader>
             <div className="panel__body">
               {data.config.gated_tools.length === 0 ? (
@@ -248,7 +248,7 @@ export function AdminTools() {
                 })
               )}
             </div>
-          </Panel>
+          </section>
         </>
       )}
     </AdminState>
@@ -261,7 +261,7 @@ export function AdminMetrics() {
   return (
     <AdminState title="Metrics sources" blurb={blurbs.metrics} error={error} loading={config === null}>
       {config !== null && (
-        <Panel>
+        <section className="flush-table">
           <PanelHeader>Metrics and logs sources</PanelHeader>
           {sources.length === 0 ? (
             <EmptyState titleText="No sources configured" headingLevel="h2" variant="sm">
@@ -282,7 +282,7 @@ export function AdminMetrics() {
               </Tbody>
             </Table>
           )}
-        </Panel>
+        </section>
       )}
     </AdminState>
   );
@@ -316,7 +316,7 @@ export function AdminChannels() {
               narrow that audience.
             </Alert>
           )}
-          <Panel>
+          <section className="flush-table">
             <PanelHeader>Channels</PanelHeader>
             {channels.length === 0 ? (
               <div className="panel__body">No channels configured.</div>
@@ -340,7 +340,7 @@ export function AdminChannels() {
                 </Tbody>
               </Table>
             )}
-          </Panel>
+          </section>
         </>
       )}
     </AdminState>
