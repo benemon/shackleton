@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, EmptyState, EmptyStateBody, Label } from '@patternfly/react-core';
+import { Alert, Button, EmptyState, EmptyStateBody, Label, SearchInput, ToggleGroup, ToggleGroupItem } from '@patternfly/react-core';
 import { CheckCircleIcon } from '@patternfly/react-icons';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -191,22 +191,110 @@ export function KBArticle() {
   );
 }
 
+// Filter options come from the loaded articles, never a fixed list: a
+// toggle for a state no article carries returns an empty table and reads
+// as a fault.
+function articleStates(article: KBArticleMeta): string[] {
+  const states: string[] = [article.status];
+  if (article.status === 'draft' && article.nominated === true) states.push('nominated');
+  return states;
+}
+
+function searchText(article: KBArticleMeta): string {
+  return [article.title, article.slug, article.symptom.alertname ?? '', article.symptom.sweep ?? '']
+    .join(' ')
+    .toLowerCase();
+}
+
 export function KB() {
   const navigate = useNavigate();
   const [articles, setArticles] = useState<KBArticleMeta[] | null>(null);
+  const [query, setQuery] = useState('');
+  const [stateFilter, setStateFilter] = useState<string[]>([]);
+  const [verdictFilter, setVerdictFilter] = useState<string[]>([]);
   const [error, setError] = useState('');
 
   useEffect(() => {
     api.listKB().then(setArticles, (reason) => setError(String(reason)));
   }, []);
 
+  const loaded = articles ?? [];
+  const stateOptions = ['approved', 'draft', 'nominated'].filter((state) =>
+    loaded.some((article) => articleStates(article).includes(state)),
+  );
+  const verdictOptions = ['healthy', 'attention', 'action', 'none'].filter((verdict) =>
+    loaded.some((article) => (article.verdict === '' ? 'none' : article.verdict) === verdict),
+  );
+  const normalizedQuery = query.trim().toLowerCase();
+  const visible = loaded.filter((article) => {
+    if (normalizedQuery !== '' && !searchText(article).includes(normalizedQuery)) return false;
+    if (stateFilter.length > 0 && !articleStates(article).some((state) => stateFilter.includes(state))) return false;
+    const verdict = article.verdict === '' ? 'none' : article.verdict;
+    return verdictFilter.length === 0 || verdictFilter.includes(verdict);
+  });
+  const filtersActive = query !== '' || stateFilter.length > 0 || verdictFilter.length > 0;
+  const toggle = (setter: typeof setStateFilter) => (value: string, selected: boolean) => {
+    setter((current) => (selected ? [...current, value] : current.filter((item) => item !== value)));
+  };
+  const clearFilters = () => {
+    setQuery('');
+    setStateFilter([]);
+    setVerdictFilter([]);
+  };
+
   return (
-    <div className="page">
+    <div className="page page--flush">
       <PageHeader title="Knowledge base" subtitle="Operator-reviewed findings and resolutions from past investigations." />
       {error !== '' && (
         <Alert variant="danger" title="Could not load the knowledge base">
           {error}
         </Alert>
+      )}
+      {articles !== null && articles.length > 0 && (
+        <div className="filter-toolbar">
+          <SearchInput
+            className="filter-toolbar__search"
+            value={query}
+            placeholder="Filter by title or symptom"
+            aria-label="Filter articles by title or symptom"
+            onChange={(_event, value) => setQuery(value)}
+            onClear={() => setQuery('')}
+          />
+          <ToggleGroup isCompact aria-label="Filter articles by state">
+            {stateOptions.map((state) => (
+              <ToggleGroupItem
+                key={state}
+                text={`${state[0].toUpperCase()}${state.slice(1)}`}
+                buttonId={`kb-state-${state}`}
+                isSelected={stateFilter.includes(state)}
+                onChange={(_event, selected) => toggle(setStateFilter)(state, selected)}
+              />
+            ))}
+          </ToggleGroup>
+          {verdictOptions.length > 1 && (
+            <ToggleGroup isCompact aria-label="Filter articles by verdict">
+              {verdictOptions.map((verdict) => (
+                <ToggleGroupItem
+                  key={verdict}
+                  text={verdict === 'none' ? 'No verdict' : `${verdict[0].toUpperCase()}${verdict.slice(1)}`}
+                  buttonId={`kb-verdict-${verdict}`}
+                  isSelected={verdictFilter.includes(verdict)}
+                  onChange={(_event, selected) => toggle(setVerdictFilter)(verdict, selected)}
+                />
+              ))}
+            </ToggleGroup>
+          )}
+          <div className="filter-toolbar__summary">
+            <span className="subtle">
+              {filtersActive
+                ? `${visible.length} of ${loaded.length}`
+                : `${loaded.length} ${loaded.length === 1 ? 'article' : 'articles'}`}
+            </span>
+            {filtersActive && (
+              <Button variant="link" isInline onClick={clearFilters}>Clear all filters</Button>
+            )}
+          </div>
+        </div>
       )}
       <section className="flush-table">
         {articles === null ? (
@@ -214,6 +302,10 @@ export function KB() {
         ) : articles.length === 0 ? (
           <EmptyState titleText="No articles yet" headingLevel="h2" variant="sm">
             <EmptyStateBody>Articles are drafted from investigations that end in a verdict.</EmptyStateBody>
+          </EmptyState>
+        ) : visible.length === 0 ? (
+          <EmptyState titleText="No articles match these filters" headingLevel="h2" variant="sm">
+            <EmptyStateBody>Widen the state filters or clear the search.</EmptyStateBody>
           </EmptyState>
         ) : (
           <Table variant="compact" aria-label="Knowledge-base articles">
@@ -227,7 +319,7 @@ export function KB() {
               </Tr>
             </Thead>
             <Tbody>
-              {articles.map((article) => (
+              {visible.map((article) => (
                 <Tr key={article.slug} isClickable onRowClick={() => navigate(`/kb/${encodeURIComponent(article.slug)}`)}>
                   <Td dataLabel="Title">
                     <Link className="table-link" to={`/kb/${encodeURIComponent(article.slug)}`}>
