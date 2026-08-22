@@ -1102,3 +1102,64 @@ func TestVerifiedResolutionsNominateDraftOnce(t *testing.T) {
 		t.Fatalf("nominations = %d, want exactly 1", nominations)
 	}
 }
+
+func TestAdHocQuestionsRecordOnlyRemediations(t *testing.T) {
+	answer := "warm\n```json\n{\"verdict\":\"attention\",\"summary\":\"node1 is warmest\",\"evidence\":[]}\n```\n"
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := New(context.Background(), audit, nil, func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		return &agent.Runner{Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+			return agent.ModelMessage{Content: answer}, nil
+		}, Tools: emptyRegistry(t)}
+	})
+	kbStore, err := kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.KB = kbStore
+	for _, trigger := range []string{"api", "mcp", "cli"} {
+		if _, err := svc.CreateInvestigation(context.Background(), "What is the warmest kubernetes host right now?", trigger); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc.Wait()
+	if articles, _ := kbStore.List(); len(articles) != 0 {
+		t.Fatalf("current-state question became an article: %+v", articles)
+	}
+
+	// The same ad-hoc trigger records once an approved remediation ran.
+	audit2, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc2 := New(context.Background(), audit2, nil, approvalRunnerFactory(t))
+	kbStore2, err := kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc2.KB = kbStore2
+	if _, err := svc2.CreateInvestigation(context.Background(), "Fix the stuck exporter on nas", "api"); err != nil {
+		t.Fatal(err)
+	}
+	var pending []PendingApproval
+	for i := 0; i < 200 && len(pending) == 0; i++ {
+		pending = svc2.ListPendingApprovals()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %+v", pending)
+	}
+	if err := svc2.DecideApproval(pending[0].ID, true, "test"); err != nil {
+		t.Fatal(err)
+	}
+	svc2.Wait()
+	articles, err := kbStore2.List()
+	if err != nil || len(articles) != 1 {
+		t.Fatalf("remediated question did not record: %+v, %v", articles, err)
+	}
+	if !strings.HasPrefix(articles[0].Slug, "adhoc-") {
+		t.Fatalf("slug = %q", articles[0].Slug)
+	}
+}

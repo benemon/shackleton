@@ -128,8 +128,9 @@ type Service struct {
 	// investigations that need eyes (attention/action/failed). Sweeps notify
 	// through their own follower; Q&A answers return on their own channel.
 	Notifier agent.Notifier
-	// KB, when set, receives a resolution record for every completed
-	// investigation with an attention/action verdict or an approved action.
+	// KB, when set, receives resolution records: symptomatic triggers
+	// (alerts, sweeps) on a non-healthy verdict or approved action; ad-hoc
+	// questions only when an approved action ran.
 	KB *kb.Store
 	// Inventory, when set, backs the /v1/inventory projection and the
 	// environment facts recorded into KB articles.
@@ -228,7 +229,12 @@ func (s *Service) recordResolution(id, question, trigger string, verdict *store.
 		return
 	}
 	actions := approvedActions(events)
-	if len(actions) == 0 && (verdict == nil || verdict.Verdict == "healthy") {
+	// The KB records resolutions, never current state. Alerts and sweeps
+	// carry stable symptom identities, so a non-healthy verdict is a
+	// recurrence worth remembering; an ad-hoc question earns an article only
+	// when an approved remediation actually ran.
+	symptomatic := strings.HasPrefix(trigger, "alert:") || strings.HasPrefix(trigger, "sweep:")
+	if len(actions) == 0 && (!symptomatic || verdict == nil || verdict.Verdict == "healthy") {
 		return
 	}
 	article := buildArticle(id, question, trigger, verdict, answer, s.environmentText(), events, actions)
