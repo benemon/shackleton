@@ -78,6 +78,9 @@ func TestSystemPrompt(t *testing.T) {
 	if !strings.Contains(got, "The gated tool run_host_command is for APPLYING an approved change") {
 		t.Errorf("singular gated sentence wrong: %q", got)
 	}
+	if !strings.Contains(got, "CALL the gated tool — the call itself is the proposal") {
+		t.Errorf("proposal-means-calling sentence missing: %q", got)
+	}
 	got = SystemPrompt("", "", nil, nil, nil)
 	if !strings.HasPrefix(got, "You are an infrastructure investigation agent. ") {
 		t.Errorf("default preamble missing: %q", got)
