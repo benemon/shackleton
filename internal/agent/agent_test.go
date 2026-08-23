@@ -548,3 +548,36 @@ func TestPreflightRewritesAliasToCanonicalTarget(t *testing.T) {
 		t.Fatalf("executed hosts = %v", executed)
 	}
 }
+
+func TestEmptyFinalAnswerNudgedThenFailsLoudly(t *testing.T) {
+	called := 0
+	completion := 0
+	runner := Runner{
+		Tools: testRegistry(t, &called),
+		Complete: func(_ context.Context, history []openai.ChatCompletionMessageParamUnion, _ []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+			completion++
+			if completion == 1 {
+				return ModelMessage{Content: ""}, nil
+			}
+			last := history[len(history)-1]
+			if last.OfUser == nil || last.OfUser.Content.OfString.Value != "Your final message was empty. State your answer now." {
+				t.Fatalf("nudge not injected before retry: %+v", last)
+			}
+			return ModelMessage{Content: "the real answer"}, nil
+		},
+	}
+	metrics, err := runner.Run(context.Background(), "question", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !metrics.Completed || metrics.Answer != "the real answer" {
+		t.Fatalf("metrics = %+v", metrics)
+	}
+
+	runner.Complete = func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+		return ModelMessage{Content: "  "}, nil
+	}
+	if _, err := runner.Run(context.Background(), "question", ""); err == nil || !strings.Contains(err.Error(), "empty final answer") {
+		t.Fatalf("repeated empty answer did not fail loudly: %v", err)
+	}
+}

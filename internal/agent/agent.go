@@ -162,6 +162,7 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 		openai.UserMessage(question),
 	}
 	malformed := make(map[string]int)
+	emptyFinals := 0
 	first := true
 
 	for metrics.Rounds < maxRounds {
@@ -178,6 +179,17 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 		}
 		messages = append(messages, assistantMessage(msg))
 		if len(msg.ToolCalls) == 0 {
+			// A thinking model can spend its final turn entirely in the
+			// reasoning channel and emit empty content; completing on that
+			// would deliver silence. Nudge once, then fail loudly.
+			if strings.TrimSpace(msg.Content) == "" {
+				emptyFinals++
+				if emptyFinals > 1 {
+					return metrics, fmt.Errorf("model returned an empty final answer twice")
+				}
+				messages = append(messages, openai.UserMessage("Your final message was empty. State your answer now."))
+				continue
+			}
 			metrics.Completed = true
 			metrics.Answer = msg.Content
 			if r.Notifier != nil {

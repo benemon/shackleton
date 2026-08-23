@@ -440,3 +440,21 @@ func TestNotifierSendsTruncatedWithoutPolling(t *testing.T) {
 		t.Fatalf("notifier polled getUpdates %d times", len(polls))
 	}
 }
+
+func TestEmptyTerminalAnswerSendsFallback(t *testing.T) {
+	client, recorder := testBot(t)
+	trigger := &Trigger{bot: client, chats: map[int64]*chatRole{7: {qa: true}}, messages: make(map[string][]postedApproval)}
+	payload, err := json.Marshal(store.CompletedPayload{Answer: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := trigger.sendTerminal(t.Context(), 7, "inv-empty", store.Event{Type: store.EventCompleted, Payload: payload})
+	if !done {
+		t.Fatal("completed event not treated as terminal")
+	}
+	calls := waitForTelegramCalls(t, recorder, "sendMessage", 1)
+	text, _ := calls[0].payload["text"].(string)
+	if !strings.Contains(text, "inv-empty") || !strings.Contains(text, "without an answer") {
+		t.Fatalf("fallback text = %q", text)
+	}
+}

@@ -342,7 +342,7 @@ func (t *Trigger) followInvestigation(ctx context.Context, chatID int64, id stri
 	}
 	defer cancel()
 	for _, event := range snapshot {
-		if t.sendTerminal(ctx, chatID, event) {
+		if t.sendTerminal(ctx, chatID, id, event) {
 			return
 		}
 	}
@@ -351,14 +351,14 @@ func (t *Trigger) followInvestigation(ctx context.Context, chatID int64, id stri
 		case <-ctx.Done():
 			return
 		case event, ok := <-live:
-			if !ok || t.sendTerminal(ctx, chatID, event) {
+			if !ok || t.sendTerminal(ctx, chatID, id, event) {
 				return
 			}
 		}
 	}
 }
 
-func (t *Trigger) sendTerminal(ctx context.Context, chatID int64, event store.Event) bool {
+func (t *Trigger) sendTerminal(ctx context.Context, chatID int64, id string, event store.Event) bool {
 	var text string
 	switch event.Type {
 	case store.EventCompleted:
@@ -377,6 +377,11 @@ func (t *Trigger) sendTerminal(ctx context.Context, chatID int64, event store.Ev
 		text = payload.Reason
 	default:
 		return false
+	}
+	// Telegram rejects empty messages; an empty terminal must still reach
+	// the operator rather than degrade to silence.
+	if strings.TrimSpace(text) == "" {
+		text = "Investigation " + id + " ended without an answer — check the console."
 	}
 	if _, err := t.bot.sendMessage(ctx, chatID, truncate(text, 3800), nil); err != nil {
 		log.Printf("telegram send investigation result: %v", err)
