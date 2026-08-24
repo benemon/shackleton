@@ -1016,6 +1016,33 @@ func TestOutcomeNotificationRouting(t *testing.T) {
 	}
 }
 
+func TestNotificationHeadlineIsBounded(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := New(context.Background(), audit, nil, func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		return &agent.Runner{Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+			return agent.ModelMessage{Content: "prose\n```json\n{\"verdict\":\"attention\",\"summary\":\"s\",\"evidence\":[]}\n```"}, nil
+		}, Tools: emptyRegistry(t)}
+	})
+	notifier := &recordingNotifier{}
+	svc.Notifier = notifier
+	long := strings.Repeat("investigate the estate ", 20)
+	if _, err := svc.CreateInvestigation(context.Background(), long, "api"); err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	got := notifier.messages()
+	if len(got) != 1 {
+		t.Fatalf("notifications = %d", len(got))
+	}
+	headline, _, _ := strings.Cut(got[0], "\n")
+	if runes := []rune(headline); len(runes) != 140 || !strings.HasSuffix(headline, "…") {
+		t.Fatalf("headline length = %d, tail %q", len([]rune(headline)), headline[len(headline)-12:])
+	}
+}
+
 func emptyRegistry(t *testing.T) *agent.Registry {
 	t.Helper()
 	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)

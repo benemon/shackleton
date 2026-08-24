@@ -211,6 +211,10 @@ func (s *Service) notifyOutcome(id, question, trigger string, verdict *store.Ver
 		return
 	}
 	headline, _, _ := strings.Cut(question, "\n")
+	// Callers control question length; the notification must not inherit it.
+	if runes := []rune(headline); len(runes) > 140 {
+		headline = string(runes[:139]) + "…"
+	}
 	var b strings.Builder
 	b.WriteString(headline + "\n")
 	switch {
