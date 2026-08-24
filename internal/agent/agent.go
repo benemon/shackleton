@@ -41,6 +41,7 @@ func SystemPrompt(preamble, environment string, metricsTools, logsTools, gatedTo
 		b.WriteString(" To propose an action, CALL the gated tool — the call itself is the proposal and the operator decides at the approval gate; never describe an action and ask permission in prose.")
 	}
 	b.WriteString(" Do not repeat a lookup you already ran. If the operator denies a proposed action, report the denial as an operator decision and do not invent a reason for it. If an approved action executes, re-run the check that motivated it and state whether the symptom cleared. After a few tool calls, stop and give your best concise answer.")
+	b.WriteString(" Evidence must quote values you actually read from tool results in this investigation; when you could not read a value, say so plainly — never assert a number or a state you did not observe.")
 	b.WriteString(" End your final answer with a fenced json block of exactly this shape:\n```json\n{\"verdict\":\"healthy\",\"summary\":\"<one line>\",\"evidence\":[\"<item>\"]}\n```\nverdict must be healthy, attention, or action. Use healthy only when nothing needs attention. If an approved action was executed, also include \"resolution\":\"cleared\" or \"resolution\":\"persisting\" in the block, based on re-checking the signal that motivated the action.")
 	return b.String()
 }
@@ -245,6 +246,21 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 	}
 	metrics.Answer = "round limit reached"
 	return metrics, nil
+}
+
+// EmitVerdict asks the model for the verdict block its final answer should
+// have carried but did not. One focused call, no tools; the caller validates
+// whatever comes back.
+func (r *Runner) EmitVerdict(ctx context.Context, question, answer string) (string, error) {
+	messages := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage("Reply with ONLY a fenced json block of exactly this shape:\n```json\n{\"verdict\":\"healthy\",\"summary\":\"<one line>\",\"evidence\":[\"<item>\"]}\n```\nverdict must be healthy, attention, or action. Use healthy only when nothing needs attention. If the answer reports an executed approved action, also include \"resolution\":\"cleared\" or \"resolution\":\"persisting\"."),
+		openai.UserMessage("Question: " + question + "\n\nFinal answer:\n" + answer + "\n\nEmit the verdict block for this answer."),
+	}
+	msg, err := r.Complete(ctx, messages, nil)
+	if err != nil {
+		return "", err
+	}
+	return msg.Content, nil
 }
 
 type callResult struct {

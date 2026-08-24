@@ -71,6 +71,10 @@ func TestSystemPrompt(t *testing.T) {
 	if !strings.Contains(got, "re-run the check that motivated it and state whether the symptom cleared") {
 		t.Errorf("verification sentence missing: %q", got)
 	}
+	if !strings.Contains(got, "Evidence must quote values you actually read from tool results") ||
+		!strings.Contains(got, "never assert a number or a state you did not observe") {
+		t.Errorf("anti-fabrication sentence missing: %q", got)
+	}
 	if !strings.Contains(got, "End your final answer with a fenced json block") || !strings.Contains(got, `{"verdict":"healthy","summary":"<one line>","evidence":["<item>"]}`) {
 		t.Errorf("verdict contract missing: %q", got)
 	}
@@ -303,6 +307,28 @@ func TestFinalRoundNudgeAppearsExactlyOnceAtCap(t *testing.T) {
 	metrics, err := runner.Run(context.Background(), "question", "")
 	if err != nil || !metrics.Completed || metrics.Answer != "done" {
 		t.Fatalf("metrics = %+v, error = %v", metrics, err)
+	}
+}
+
+func TestEmitVerdictAsksWithoutToolsAndCarriesTheAnswer(t *testing.T) {
+	var seenMessages []openai.ChatCompletionMessageParamUnion
+	var seenTools []openai.ChatCompletionToolUnionParam
+	runner := Runner{
+		Complete: func(_ context.Context, messages []openai.ChatCompletionMessageParamUnion, tools []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+			seenMessages, seenTools = messages, tools
+			return ModelMessage{Content: "```json\n{\"verdict\":\"healthy\",\"summary\":\"s\",\"evidence\":[]}\n```"}, nil
+		},
+	}
+	block, err := runner.EmitVerdict(context.Background(), "the question", "the final answer")
+	if err != nil || !strings.Contains(block, `"verdict":"healthy"`) {
+		t.Fatalf("block = %q, err = %v", block, err)
+	}
+	if len(seenTools) != 0 {
+		t.Fatalf("extraction call carried %d tools", len(seenTools))
+	}
+	user := seenMessages[len(seenMessages)-1].OfUser.Content.OfString.Value
+	if !strings.Contains(user, "the question") || !strings.Contains(user, "the final answer") {
+		t.Fatalf("extraction user message = %q", user)
 	}
 }
 

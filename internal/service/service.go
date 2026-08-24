@@ -171,6 +171,19 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 		}
 		status := "completed"
 		verdict := store.ParseVerdict(metrics.Answer)
+		// A completed answer without a parseable block gets one focused
+		// extraction call before the investigation records verdict-less —
+		// "verdict unparseable" should mean the model could not judge, not
+		// that it fumbled the fencing.
+		if runErr == nil && metrics.Completed && verdict == nil {
+			emitCtx, cancel := context.WithTimeout(s.ctx, 2*time.Minute)
+			if block, emitErr := runner.EmitVerdict(emitCtx, question, metrics.Answer); emitErr == nil {
+				if verdict = store.ParseVerdict(block); verdict == nil {
+					verdict = store.ParseVerdict("```json\n" + strings.TrimSpace(block) + "\n```")
+				}
+			}
+			cancel()
+		}
 		if runErr != nil {
 			status = "failed"
 			_ = investigation.Append(store.EventFailed, store.FailedPayload{Reason: runErr.Error(), Metrics: metrics})

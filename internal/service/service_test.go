@@ -172,6 +172,51 @@ func TestCreateInvestigationRunsAndRecordsTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestMissingVerdictTriggersOneExtractionCall(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	factory := func(events agent.EventSink, approver agent.Approver) *agent.Runner {
+		return &agent.Runner{
+			Tools: registry, Events: events, Approver: approver,
+			Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
+				calls++
+				if calls == 1 {
+					return agent.ModelMessage{Content: "prose answer with no block"}, nil
+				}
+				// The extraction reply arrives without fencing; the wrap
+				// fallback must still parse it.
+				return agent.ModelMessage{Content: `{"verdict":"attention","summary":"s","evidence":["e"]}`}, nil
+			},
+		}
+	}
+	service := New(context.Background(), audit, testConfig(t), factory)
+	summary, err := service.CreateInvestigation(context.Background(), "question", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Wait()
+	summary, _, err = service.GetInvestigation(summary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("completion calls = %d, want run + one extraction", calls)
+	}
+	if summary.Verdict == nil || summary.Verdict.Verdict != "attention" {
+		t.Fatalf("verdict = %+v, want extracted attention", summary.Verdict)
+	}
+	if summary.Answer != "prose answer with no block" {
+		t.Fatalf("answer was rewritten: %q", summary.Answer)
+	}
+}
+
 func TestApprovalDecisionsAreRoutedExactlyOnce(t *testing.T) {
 	service := New(context.Background(), nil, nil, nil)
 	type result struct {
