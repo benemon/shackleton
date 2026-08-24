@@ -8,6 +8,7 @@ import {
   NavExpandable,
   NavItem,
   NavList,
+  Spinner,
   TextInput,
   Title,
 } from '@patternfly/react-core';
@@ -20,7 +21,7 @@ import {
   SearchIcon,
 } from '@patternfly/react-icons';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { api, clearToken, getToken, setToken, type ConfigView, type Health } from './api';
+import { api, clearToken, session, setToken, type ConfigView, type Health } from './api';
 import { Panel } from './components';
 import { AdminChannels, AdminMetrics, AdminPlatform, AdminSweeps, AdminTools } from './pages/Admin';
 import { Approvals } from './pages/Approvals';
@@ -29,7 +30,7 @@ import { Inventory } from './pages/Inventory';
 import { KB, KBArticle } from './pages/KB';
 import { Overview } from './pages/Overview';
 
-function TokenGate({ onSet }: { onSet: () => void }) {
+export function TokenGate({ onSet }: { onSet: () => void }) {
   const [value, setValue] = useState('');
   return (
     <main className="token-gate">
@@ -42,8 +43,11 @@ function TokenGate({ onSet }: { onSet: () => void }) {
           <Form
             onSubmit={(event) => {
               event.preventDefault();
-              if (value.trim() !== '') {
-                setToken(value.trim());
+              const token = value.trim();
+              if (token !== '') {
+                setToken(token);
+                // Fire-and-forget: the cookie only matters on the next reload.
+                session.create(token).catch(() => undefined);
                 onSet();
               }
             }}
@@ -85,7 +89,7 @@ const administrationNavigation: NavEntry[] = [
   { path: '/admin/sweeps', label: 'Sweeps' },
 ];
 
-function Console() {
+export function Console() {
   const location = useLocation();
   const navigate = useNavigate();
   const [health, setHealth] = useState<Health | null>(null);
@@ -121,8 +125,10 @@ function Console() {
           <Button
             variant="link"
             onClick={() => {
-              clearToken();
-              window.location.reload();
+              session.end().finally(() => {
+                clearToken();
+                window.location.reload();
+              });
             }}
           >
             Disconnect
@@ -189,7 +195,26 @@ function Console() {
 }
 
 export function App() {
-  const [authed, setAuthed] = useState(getToken() !== null);
-  if (!authed) return <TokenGate onSet={() => setAuthed(true)} />;
+  const [phase, setPhase] = useState<'restoring' | 'gate' | 'console'>('restoring');
+  useEffect(() => {
+    session.restore().then(
+      (restored) => {
+        if (restored !== null) setToken(restored);
+        setPhase(restored !== null ? 'console' : 'gate');
+      },
+      () => setPhase('gate'),
+    );
+  }, []);
+  if (phase === 'restoring') {
+    return (
+      <main className="token-gate">
+        <div className="stack" style={{ alignItems: 'center' }}>
+          <Spinner aria-label="Restoring your session…" />
+          <p className="subtle">Restoring your session…</p>
+        </div>
+      </main>
+    );
+  }
+  if (phase === 'gate') return <TokenGate onSet={() => setPhase('console')} />;
   return <Console />;
 }

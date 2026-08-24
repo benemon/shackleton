@@ -7,13 +7,11 @@ let vite
 let api
 let APIError
 let streamSSE
+let session
+let getToken
+let setToken
+let clearToken
 
-const storage = new Map()
-globalThis.sessionStorage = {
-  getItem: (key) => (storage.has(key) ? storage.get(key) : null),
-  setItem: (key, value) => storage.set(key, String(value)),
-  removeItem: (key) => storage.delete(key),
-}
 let reloads = 0
 globalThis.window = { location: { reload: () => { reloads += 1 } } }
 
@@ -32,7 +30,8 @@ before(async () => {
     server: { middlewareMode: true },
     appType: 'custom',
   })
-  ;({ api, APIError, streamSSE } = await vite.ssrLoadModule('/src/api.ts'))
+  ;({ api, APIError, streamSSE, session, getToken, setToken, clearToken } =
+    await vite.ssrLoadModule('/src/api.ts'))
 })
 
 after(async () => {
@@ -40,12 +39,12 @@ after(async () => {
 })
 
 beforeEach(() => {
-  storage.clear()
+  clearToken()
   reloads = 0
 })
 
-test('requests carry the stored token as a bearer header', async () => {
-  storage.set('shackleton-token', 'secret')
+test('requests carry the in-memory token as a bearer header', async () => {
+  setToken('secret')
   let seen
   globalThis.fetch = async (path, init) => {
     seen = { path, headers: init.headers }
@@ -57,39 +56,66 @@ test('requests carry the stored token as a bearer header', async () => {
   assert.equal(seen.headers.Authorization, 'Bearer secret')
 })
 
-test('a 401 clears the stored token and reloads back to the gate', async () => {
-  storage.set('shackleton-token', 'stale')
+test('a 401 drops the in-memory token and reloads back to the boot exchange', async () => {
+  setToken('stale')
   globalThis.fetch = async () => jsonResponse(401, { error: 'unauthorized' })
   await assert.rejects(() => api.getHealth())
-  assert.equal(storage.has('shackleton-token'), false)
+  assert.equal(getToken(), null)
   assert.equal(reloads, 1)
 })
 
 test('a non-401 failure surfaces the daemon error without touching the session', async () => {
-  storage.set('shackleton-token', 'secret')
+  setToken('secret')
   globalThis.fetch = async () => jsonResponse(500, { error: 'store unavailable' })
   await assert.rejects(
     () => api.getHealth(),
     (reason) => reason instanceof APIError && reason.status === 500 && reason.message === 'store unavailable',
   )
-  assert.equal(storage.get('shackleton-token'), 'secret')
+  assert.equal(getToken(), 'secret')
   assert.equal(reloads, 0)
 })
 
 test('the raw-markdown article fetch shares the 401 gate behaviour', async () => {
-  storage.set('shackleton-token', 'stale')
+  setToken('stale')
   globalThis.fetch = async () => jsonResponse(401, { error: 'unauthorized' })
   await assert.rejects(() => api.getKBArticle('slug'))
-  assert.equal(storage.has('shackleton-token'), false)
+  assert.equal(getToken(), null)
   assert.equal(reloads, 1)
 
-  storage.set('shackleton-token', 'secret')
+  setToken('secret')
   globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => '# article' })
   assert.equal(await api.getKBArticle('slug'), '# article')
 })
 
+test('restore exchanges the cookie for a token on 200 and yields null on 204', async () => {
+  globalThis.fetch = async (path, init) => {
+    assert.equal(path, '/v1/session')
+    assert.equal(init, undefined)
+    return jsonResponse(200, { token: 'restored' })
+  }
+  assert.equal(await session.restore(), 'restored')
+
+  globalThis.fetch = async () => ({ ok: true, status: 204 })
+  assert.equal(await session.restore(), null)
+})
+
+test('creating a session presents the fresh token as a bearer, ending it needs none', async () => {
+  const calls = []
+  globalThis.fetch = async (path, init) => {
+    calls.push({ path, init })
+    return { ok: true, status: 204 }
+  }
+  await session.create('fresh')
+  await session.end()
+  assert.equal(calls[0].path, '/v1/session')
+  assert.equal(calls[0].init.method, 'POST')
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer fresh')
+  assert.equal(calls[1].init.method, 'DELETE')
+  assert.equal(calls[1].init.headers, undefined)
+})
+
 test('the SSE parser assembles frames across chunk boundaries', async () => {
-  storage.set('shackleton-token', 'secret')
+  setToken('secret')
   const chunks = [
     'event: requested\ndata: {"a"',
     ':1}\n\ndata: plain\n\nevent: settled\nda',

@@ -256,6 +256,48 @@ paths:
                 $ref: '#/components/schemas/Health'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /v1/session:
+    post:
+      operationId: createSession
+      description: >-
+        Verifies the presented bearer token and sets it as an httpOnly,
+        SameSite=Strict cookie scoped to this path alone, so a console reload
+        can restore its session without a credential in web storage.
+      responses:
+        '204':
+          description: Session cookie set
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    get:
+      operationId: readSession
+      security: []
+      description: >-
+        Exchanges the session cookie for the token it holds. An invalid cookie
+        is cleared and answers 204, never 401.
+      responses:
+        '200':
+          description: Session token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionToken'
+        '204':
+          description: No restorable session
+    delete:
+      operationId: deleteSession
+      security: []
+      description: Clears the session cookie. Requires no live credential.
+      responses:
+        '204':
+          description: Session ended
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
 components:
   securitySchemes:
     bearerAuth:
@@ -827,6 +869,13 @@ components:
                 type: string
         api_token:
           $ref: '#/components/schemas/SecretRef'
+    SessionToken:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
     Health:
       type: object
       additionalProperties: false

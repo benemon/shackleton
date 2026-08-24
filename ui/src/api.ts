@@ -13,11 +13,30 @@ export type AuditEntry = components['schemas']['AuditEntry'];
 export type Health = components['schemas']['Health'];
 export type SecretRef = components['schemas']['SecretRef'];
 
-const TOKEN_KEY = 'shackleton-token';
+// The token lives in memory only; reload survival rides the httpOnly session
+// cookie at /v1/session, which script can never read (Dufflebag ADR-0021).
+let token: string | null = null;
 
-export const getToken = () => sessionStorage.getItem(TOKEN_KEY);
-export const setToken = (t: string) => sessionStorage.setItem(TOKEN_KEY, t);
-export const clearToken = () => sessionStorage.removeItem(TOKEN_KEY);
+export const getToken = () => token;
+export const setToken = (t: string) => {
+  token = t;
+};
+export const clearToken = () => {
+  token = null;
+};
+
+export const session = {
+  // 200 restores the token the cookie holds; 204 means no session to restore.
+  restore: async (): Promise<string | null> => {
+    const res = await fetch('/v1/session');
+    if (res.status !== 200) return null;
+    const body = (await res.json()) as components['schemas']['SessionToken'];
+    return body.token;
+  },
+  create: (t: string) =>
+    fetch('/v1/session', { method: 'POST', headers: { Authorization: `Bearer ${t}` } }),
+  end: () => fetch('/v1/session', { method: 'DELETE' }),
+};
 
 export class APIError extends Error {
   constructor(

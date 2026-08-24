@@ -257,6 +257,7 @@ func TestEveryRouteRequiresBearerToken(t *testing.T) {
 		path   string
 		body   string
 	}{
+		{http.MethodPost, "/v1/session", ""},
 		{http.MethodPost, "/v1/investigations", `{"question":"q"}`},
 		{http.MethodGet, "/v1/investigations", ""},
 		{http.MethodGet, "/v1/investigations/missing", ""},
@@ -283,6 +284,78 @@ func TestEveryRouteRequiresBearerToken(t *testing.T) {
 				t.Fatalf("%s %s with %q returned %d", route.method, route.path, authorization, response.Code)
 			}
 		}
+	}
+}
+
+func TestSessionCookieLifecycle(t *testing.T) {
+	service := New(context.Background(), nil, nil, nil)
+	handler := NewHTTP(service, "correct-token")
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/session", nil)
+	request.Header.Set("Authorization", "Bearer correct-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("create session returned %d", response.Code)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("create session set %d cookies", len(cookies))
+	}
+	session := cookies[0]
+	if session.Name != "shackleton_session" || session.Value != "correct-token" {
+		t.Fatalf("unexpected cookie %s=%s", session.Name, session.Value)
+	}
+	if !session.HttpOnly || session.SameSite != http.SameSiteStrictMode || session.Path != "/v1/session" {
+		t.Fatalf("cookie attributes: httpOnly=%v sameSite=%v path=%s", session.HttpOnly, session.SameSite, session.Path)
+	}
+	if session.MaxAge != 0 {
+		t.Fatalf("session cookie must die with the browser, got MaxAge %d", session.MaxAge)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v1/session", nil)
+	request.AddCookie(session)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("read session returned %d", response.Code)
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil || body.Token != "correct-token" {
+		t.Fatalf("read session body %q err %v", body.Token, err)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v1/session", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || len(response.Result().Cookies()) != 0 {
+		t.Fatalf("read without cookie returned %d with %d cookies", response.Code, len(response.Result().Cookies()))
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/v1/session", nil)
+	request.AddCookie(&http.Cookie{Name: "shackleton_session", Value: "rotated-away"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("read with stale cookie returned %d", response.Code)
+	}
+	cleared := response.Result().Cookies()
+	if len(cleared) != 1 || cleared[0].Value != "" || cleared[0].MaxAge != -1 {
+		t.Fatalf("stale cookie was not cleared: %+v", cleared)
+	}
+
+	// Ending a session must never require a live credential.
+	request = httptest.NewRequest(http.MethodDelete, "/v1/session", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("delete session returned %d", response.Code)
+	}
+	cleared = response.Result().Cookies()
+	if len(cleared) != 1 || cleared[0].Value != "" || cleared[0].MaxAge != -1 {
+		t.Fatalf("delete did not clear the cookie: %+v", cleared)
 	}
 }
 

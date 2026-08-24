@@ -14,8 +14,21 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// sessionCookieName carries the console's token between reloads. HttpOnly and
+// SameSite=Strict, scoped to the session path alone — script cannot read it,
+// and no other route ever receives it. The token in memory remains the
+// credential the console actually uses; this cookie only lets a reload get it
+// back (the Dufflebag ADR-0021 pattern, minus renewal: the token is static).
+const sessionCookieName = "shackleton_session"
+
+const sessionPath = "/v1/session"
+
 func NewHTTP(service *Service, token string) http.Handler {
 	mux := http.NewServeMux()
+	// POST verifies the presented bearer through the same middleware as every
+	// mutating route and mints it into the cookie. CSRF holds because a
+	// cross-site form cannot set an Authorization header.
+	mux.HandleFunc("POST "+sessionPath, createSession)
 	mux.HandleFunc("POST /v1/investigations", service.createInvestigation)
 	mux.HandleFunc("GET /v1/investigations", service.listInvestigations)
 	mux.HandleFunc("GET /v1/investigations/{id}", service.getInvestigation)
@@ -31,7 +44,63 @@ func NewHTTP(service *Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/config", service.getConfig)
 	mux.HandleFunc("GET /v1/health", service.getHealth)
 	mux.Handle("GET /metrics", promhttp.Handler())
-	return bearerAuth(mux, token)
+	// GET and DELETE are the only routes exempt from the bearer middleware:
+	// their credential arrives as the cookie (a booting console has no token
+	// yet), and ending a session must never require a live credential.
+	root := http.NewServeMux()
+	root.HandleFunc("GET "+sessionPath, readSession(token))
+	root.HandleFunc("DELETE "+sessionPath, deleteSession)
+	root.Handle("/", bearerAuth(mux, token))
+	return root
+}
+
+func sessionCookie(token string, r *http.Request) *http.Cookie {
+	return &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     sessionPath,
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+	}
+}
+
+func clearedSessionCookie(r *http.Request) *http.Cookie {
+	cookie := sessionCookie("", r)
+	cookie.MaxAge = -1
+	return cookie
+}
+
+func createSession(w http.ResponseWriter, r *http.Request) {
+	provided, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	http.SetCookie(w, sessionCookie(provided, r))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// readSession exchanges the cookie for the token it holds. An invalid cookie
+// is cleared and answers 204, not 401 — the console falls back to its gate.
+func readSession(token string) http.HandlerFunc {
+	want := []byte(token)
+	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(sessionCookieName)
+		if err != nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(cookie.Value), want) != 1 {
+			http.SetCookie(w, clearedSessionCookie(r))
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		writeJSON(w, http.StatusOK, struct {
+			Token string `json:"token"`
+		}{cookie.Value})
+	}
+}
+
+func deleteSession(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, clearedSessionCookie(r))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func bearerAuth(next http.Handler, token string) http.Handler {
