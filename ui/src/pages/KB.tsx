@@ -75,7 +75,7 @@ function parseMarkdown(markdown: string): MarkdownBlock[] {
   return output;
 }
 
-function Markdown({ source }: { source: string }) {
+export function Markdown({ source }: { source: string }) {
   return (
     <>
       {parseMarkdown(stripFrontMatter(source)).map((block, index) => {

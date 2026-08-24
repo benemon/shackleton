@@ -57,7 +57,7 @@ export function Inventory() {
   );
 }
 
-function InventoryPanels({
+export function InventoryPanels({
   inventory,
   expanded,
   setExpanded,

@@ -16,10 +16,13 @@ test:
 	go vet ./...
 	go test ./... -count=1
 
+test-ui:
+	cd ui && { [ -d node_modules ] || npm ci; } && npm test
+
 image:
 	$(CONTAINER_TOOL) build -t shackleton:$(VERSION) --build-arg APP_VERSION=$(VERSION) .
 
 clean:
 	rm -rf bin
 
-.PHONY: ui build linux test image clean
+.PHONY: ui build linux test test-ui image clean

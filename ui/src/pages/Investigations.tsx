@@ -61,7 +61,7 @@ function EventDetail({ event }: { event: StoredEvent }) {
   return <>{String(payload.reason ?? '')}</>;
 }
 
-function EventStream({ events }: { events: StoredEvent[] }) {
+export function EventStream({ events }: { events: StoredEvent[] }) {
   return (
     <div className="drawer-panel">
       <h2 id="event-stream-title">Event stream</h2>
@@ -82,7 +82,7 @@ function EventStream({ events }: { events: StoredEvent[] }) {
   );
 }
 
-function GatedActions({ events }: { events: StoredEvent[] }) {
+export function GatedActions({ events }: { events: StoredEvent[] }) {
   const decisions = new Map<string, EventPayload>();
   for (const event of events) {
     if (event.type === 'approval_decided') {
