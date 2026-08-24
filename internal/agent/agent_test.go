@@ -307,10 +307,11 @@ func TestFinalRoundNudgeAppearsExactlyOnceAtCap(t *testing.T) {
 }
 
 type fakeMCPSession struct {
-	callErr error
-	pingErr error
-	result  string
-	calls   int
+	callErr  error
+	pingErr  error
+	pingErrs []error
+	result   string
+	calls    int
 }
 
 func (s *fakeMCPSession) ListTools(context.Context, *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
@@ -327,8 +328,15 @@ func (s *fakeMCPSession) CallTool(context.Context, *mcp.CallToolParams) (*mcp.Ca
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s.result}}}, nil
 }
 
-func (s *fakeMCPSession) Ping(context.Context, *mcp.PingParams) error { return s.pingErr }
-func (s *fakeMCPSession) Close() error                                { return nil }
+func (s *fakeMCPSession) Ping(context.Context, *mcp.PingParams) error {
+	if len(s.pingErrs) > 0 {
+		err := s.pingErrs[0]
+		s.pingErrs = s.pingErrs[1:]
+		return err
+	}
+	return s.pingErr
+}
+func (s *fakeMCPSession) Close() error { return nil }
 
 func TestDuplicateToolNamesAcrossServersFailStartup(t *testing.T) {
 	connect := func(context.Context) (MCPSession, error) { return &fakeMCPSession{}, nil }
@@ -426,8 +434,10 @@ func TestRegistryReconnectsAndRetriesFailedToolCall(t *testing.T) {
 
 func TestRegistryNeverRetriesGatedToolCall(t *testing.T) {
 	connects := 0
+	// Alive at submission (first ping passes), dies mid-flight: the one
+	// permitted submission is spent, so the fresh session must not re-run it.
 	sessions := []*fakeMCPSession{
-		{callErr: errors.New("connection reset"), pingErr: errors.New("dead session")},
+		{callErr: errors.New("connection reset"), pingErrs: []error{nil}, pingErr: errors.New("dead session")},
 		{result: "would be a double execution"},
 	}
 	connect := func(context.Context) (MCPSession, error) {
@@ -450,6 +460,35 @@ func TestRegistryNeverRetriesGatedToolCall(t *testing.T) {
 	}
 	if sessions[1].calls != 0 {
 		t.Fatalf("gated tool was re-executed on the fresh session (%d calls)", sessions[1].calls)
+	}
+}
+
+func TestGatedCallOnDeadSessionReconnectsBeforeSubmitting(t *testing.T) {
+	connects := 0
+	sessions := []*fakeMCPSession{
+		{callErr: errors.New("must never be submitted"), pingErr: errors.New("session idled out")},
+		{result: "executed once"},
+	}
+	connect := func(context.Context) (MCPSession, error) {
+		session := sessions[connects]
+		connects++
+		return session, nil
+	}
+	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}},
+		map[string]bool{"repair": true}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	result, err := registry.tools["repair"].call(context.Background(), map[string]any{})
+	if err != nil || result != "executed once" {
+		t.Fatalf("gated call on dead session = %q, %v", result, err)
+	}
+	if sessions[0].calls != 0 {
+		t.Fatalf("gated call was submitted to the dead session (%d calls)", sessions[0].calls)
+	}
+	if sessions[1].calls != 1 || connects != 2 {
+		t.Fatalf("fresh session calls = %d, connects = %d", sessions[1].calls, connects)
 	}
 }
 

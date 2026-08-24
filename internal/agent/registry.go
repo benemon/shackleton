@@ -127,6 +127,17 @@ func (s *reconnectingSession) listTools(ctx context.Context) (*mcp.ListToolsResu
 func (s *reconnectingSession) callTool(ctx context.Context, params *mcp.CallToolParams, retry bool) (*mcp.CallToolResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A gated call gets exactly one submission (mutations must never run
+	// twice), so it must not spend that submission on a session that idled
+	// out while the operator decided: prove the session alive and replace a
+	// dead one before submitting. Ungated calls skip the ping — their
+	// post-failure retry below already covers a dead session.
+	if !retry && s.session.Ping(ctx, nil) != nil {
+		if replacement, err := s.connect(ctx); err == nil {
+			_ = s.session.Close()
+			s.session = replacement
+		}
+	}
 	result, originalErr := s.session.CallTool(ctx, params)
 	if originalErr == nil {
 		return result, nil
