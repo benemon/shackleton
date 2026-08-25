@@ -527,14 +527,41 @@ func newRunnerFactory(ctx context.Context, cfg *config.Config, inv *inventory.In
 		logs = append(logs, nativeSource(source.Name, source.URL, source.AuthHeader))
 		logsTools = append(logsTools, "query_"+source.Name+"_logs")
 	}
-	registry, err := agent.NewRegistry(ctx, servers, gatedTools, metrics, logs)
+	var search *agent.KnowledgeSearch
+	if cfg.KnowledgeSearch != nil {
+		search = &agent.KnowledgeSearch{
+			URL:    strings.TrimRight(cfg.KnowledgeSearch.URL, "/"),
+			Client: &http.Client{Timeout: cfg.Agent.CallTimeout.Duration()},
+		}
+	}
+	var knowledge []agent.KnowledgeSource
+	var knowledgeTools []string
+	for _, source := range cfg.KnowledgeSources {
+		auth := source.Auth.Fresh
+		if !source.Auth.IsSet() {
+			auth = func() string { return "" }
+		}
+		knowledge = append(knowledge, agent.KnowledgeSource{
+			Name: source.Name, Type: source.Type, Sites: append([]string{}, source.Sites...),
+			Auth: auth, Client: &http.Client{Timeout: cfg.Agent.CallTimeout.Duration()},
+		})
+		if source.Type == "redhat" {
+			knowledgeTools = append(knowledgeTools, "search_"+source.Name+"_kb", "get_"+source.Name+"_kb", "search_"+source.Name+"_docs")
+			continue
+		}
+		knowledgeTools = append(knowledgeTools, "get_"+source.Name+"_doc")
+		if search != nil {
+			knowledgeTools = append(knowledgeTools, "search_"+source.Name+"_docs")
+		}
+	}
+	registry, err := agent.NewRegistry(ctx, servers, gatedTools, metrics, logs, knowledge, search)
 	if err != nil {
 		return nil, func() {}, err
 	}
 	closeSessions := func() { _ = registry.Close() }
 	openAIClient := openai.NewClient(option.WithBaseURL(cfg.Model.BaseURL), option.WithAPIKey(cfg.Model.APIKey.Value()))
 	complete := agent.StreamCompleter(openAIClient, cfg.Model.Name)
-	prompt := agent.SystemPrompt(cfg.Agent.Prompt, inv.Environment(), metricsTools, logsTools, cfg.GatedTools)
+	prompt := agent.SystemPrompt(cfg.Agent.Prompt, inv.Environment(), metricsTools, logsTools, knowledgeTools, cfg.GatedTools)
 	var targets agent.TargetResolver
 	if len(inv.Hosts) > 0 {
 		targets = inv

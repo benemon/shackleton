@@ -54,6 +54,7 @@ test('each admin surface pins its empty-state copy', () => {
     'No tools require approval.',
     'No channels configured.',
     'No custom prompt configured.',
+    'No knowledge sources configured.',
   ]) {
     assert.ok(source.includes(sentence), sentence)
   }

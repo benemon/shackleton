@@ -17,7 +17,7 @@ import (
 // behavioral contract, with tool names drawn from what is actually
 // registered. The denial sentence is a hard requirement: the model must
 // report an operator deny as a decision, not invent a rationale for it.
-func SystemPrompt(preamble, environment string, metricsTools, logsTools, gatedTools []string) string {
+func SystemPrompt(preamble, environment string, metricsTools, logsTools, knowledgeTools, gatedTools []string) string {
 	var b strings.Builder
 	if preamble == "" {
 		preamble = "You are an infrastructure investigation agent."
@@ -31,6 +31,11 @@ func SystemPrompt(preamble, environment string, metricsTools, logsTools, gatedTo
 	}
 	if len(logsTools) > 0 {
 		b.WriteString(" Use " + strings.Join(logsTools, " and ") + " to search logs when corroborating a finding.")
+	}
+	if len(knowledgeTools) > 0 {
+		b.WriteString(" Use " + strings.Join(knowledgeTools, ", ") + " to consult vendor documentation and knowledge bases.")
+		b.WriteString(" A procedural recommendation — an upgrade path, a command to run, how a system behaves — must be grounded in what you read this investigation from the estate, the knowledge base, or a documentation lookup; otherwise state plainly that it comes from general knowledge and is unverified.")
+		b.WriteString(" Never include estate hostnames or identifiers in documentation search queries.")
 	}
 	if len(gatedTools) == 1 {
 		b.WriteString(" The gated tool " + gatedTools[0] + " is for APPLYING an approved change, never for lookups; prefer auto-approved read tools.")
@@ -159,7 +164,7 @@ func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (met
 	}
 	prompt := r.Prompt
 	if prompt == "" {
-		prompt = SystemPrompt("", "", nil, nil, nil)
+		prompt = SystemPrompt("", "", nil, nil, nil, nil)
 	}
 	messages := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(prompt + " The current time is " + time.Now().UTC().Format(time.RFC3339) + "."),

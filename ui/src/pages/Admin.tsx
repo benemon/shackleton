@@ -261,28 +261,58 @@ export function AdminMetrics() {
   return (
     <AdminState title="Metrics sources" blurb={blurbs.metrics} error={error} loading={config === null}>
       {config !== null && (
-        <section className="flush-table">
-          <PanelHeader>Metrics and logs sources</PanelHeader>
-          {sources.length === 0 ? (
-            <EmptyState titleText="No sources configured" headingLevel="h2" variant="sm">
-              <EmptyStateBody>Metrics and logs endpoints will appear here when configured.</EmptyStateBody>
-            </EmptyState>
-          ) : (
-            <Table variant="compact" aria-label="Metrics and logs sources">
-              <Thead><Tr><Th>Name</Th><Th>Type</Th><Th>URL</Th><Th>Auth</Th></Tr></Thead>
-              <Tbody>
-                {sources.map((source) => (
-                  <Tr key={`${source.type}-${source.name}`}>
-                    <Td dataLabel="Name"><span className="mono">{source.name}</span></Td>
-                    <Td dataLabel="Type"><Label color="blue" isCompact>{source.type}</Label></Td>
-                    <Td dataLabel="URL"><span className="mono mono--small">{source.url}</span></Td>
-                    <Td dataLabel="Auth"><SecretRefView secret={source.auth_header} /></Td>
-                  </Tr>
-                ))}
-              </Tbody>
-            </Table>
-          )}
-        </section>
+        <>
+          <section className="flush-table">
+            <PanelHeader>Metrics and logs sources</PanelHeader>
+            {sources.length === 0 ? (
+              <EmptyState titleText="No sources configured" headingLevel="h2" variant="sm">
+                <EmptyStateBody>Metrics and logs endpoints will appear here when configured.</EmptyStateBody>
+              </EmptyState>
+            ) : (
+              <Table variant="compact" aria-label="Metrics and logs sources">
+                <Thead><Tr><Th>Name</Th><Th>Type</Th><Th>URL</Th><Th>Auth</Th></Tr></Thead>
+                <Tbody>
+                  {sources.map((source) => (
+                    <Tr key={`${source.type}-${source.name}`}>
+                      <Td dataLabel="Name"><span className="mono">{source.name}</span></Td>
+                      <Td dataLabel="Type"><Label color="blue" isCompact>{source.type}</Label></Td>
+                      <Td dataLabel="URL"><span className="mono mono--small">{source.url}</span></Td>
+                      <Td dataLabel="Auth"><SecretRefView secret={source.auth_header} /></Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            )}
+          </section>
+          <section className="flush-table">
+            <PanelHeader>Knowledge sources</PanelHeader>
+            {config.knowledge_sources.length === 0 ? (
+              <div className="panel__body">No knowledge sources configured.</div>
+            ) : (
+              <Table variant="compact" aria-label="Knowledge sources">
+                <Thead><Tr><Th>Name</Th><Th>Type</Th><Th>Sites</Th><Th>Auth</Th></Tr></Thead>
+                <Tbody>
+                  {config.knowledge_sources.map((source) => (
+                    <Tr key={source.name}>
+                      <Td dataLabel="Name"><span className="mono">{source.name}</span></Td>
+                      <Td dataLabel="Type"><Label color="blue" isCompact>{source.type}</Label></Td>
+                      <Td dataLabel="Sites">
+                        <span className="mono mono--small">{(source.sites ?? []).join(', ') || '—'}</span>
+                      </Td>
+                      <Td dataLabel="Auth"><SecretRefView secret={source.auth} /></Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            )}
+            {config.knowledge_search !== undefined && (
+              <div className="panel__body subtle">
+                Search backend: {config.knowledge_search.type} ·{' '}
+                <span className="mono mono--small">{config.knowledge_search.url}</span>
+              </div>
+            )}
+          </section>
+        </>
       )}
     </AdminState>
   );

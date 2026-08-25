@@ -185,7 +185,7 @@ func (triggerApprovalSession) Close() error                                { ret
 
 func completedFactory(t *testing.T, answer string) service.RunnerFactory {
 	t.Helper()
-	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func triggerApprovalFactory(t *testing.T) service.RunnerFactory {
 	t.Helper()
 	registry, err := agent.NewRegistry(context.Background(), []agent.MCPServer{{
 		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return triggerApprovalSession{}, nil },
-	}}, map[string]bool{"repair": true}, nil, nil)
+	}}, map[string]bool{"repair": true}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

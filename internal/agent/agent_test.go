@@ -52,6 +52,7 @@ func TestSystemPrompt(t *testing.T) {
 		"Inventory:\nHosts:\n- alpha",
 		[]string{"query_prometheus_instant", "query_prometheus_range"},
 		[]string{"query_loki_logs"},
+		[]string{"search_redhat_kb", "get_redhat_kb"},
 		[]string{"run_host_command", "run_kubectl_command"})
 	if !strings.Contains(got, "You investigate the ACME estate.\nInventory:\nHosts:\n- alpha\n") {
 		t.Errorf("environment section missing after preamble: %q", got)
@@ -75,21 +76,31 @@ func TestSystemPrompt(t *testing.T) {
 		!strings.Contains(got, "never assert a number or a state you did not observe") {
 		t.Errorf("anti-fabrication sentence missing: %q", got)
 	}
+	if !strings.Contains(got, "Use search_redhat_kb, get_redhat_kb to consult vendor documentation and knowledge bases.") {
+		t.Errorf("knowledge sentence missing: %q", got)
+	}
+	if !strings.Contains(got, "A procedural recommendation") ||
+		!strings.Contains(got, "otherwise state plainly that it comes from general knowledge and is unverified") {
+		t.Errorf("grounding sentence missing: %q", got)
+	}
+	if !strings.Contains(got, "Never include estate hostnames or identifiers in documentation search queries.") {
+		t.Errorf("query-privacy sentence missing: %q", got)
+	}
 	if !strings.Contains(got, "End your final answer with a fenced json block") || !strings.Contains(got, `{"verdict":"healthy","summary":"<one line>","evidence":["<item>"]}`) {
 		t.Errorf("verdict contract missing: %q", got)
 	}
-	got = SystemPrompt("", "", nil, nil, []string{"run_host_command"})
+	got = SystemPrompt("", "", nil, nil, nil, []string{"run_host_command"})
 	if !strings.Contains(got, "The gated tool run_host_command is for APPLYING an approved change") {
 		t.Errorf("singular gated sentence wrong: %q", got)
 	}
 	if !strings.Contains(got, "CALL the gated tool — the call itself is the proposal") {
 		t.Errorf("proposal-means-calling sentence missing: %q", got)
 	}
-	got = SystemPrompt("", "", nil, nil, nil)
+	got = SystemPrompt("", "", nil, nil, nil, nil)
 	if !strings.HasPrefix(got, "You are an infrastructure investigation agent. ") {
 		t.Errorf("default preamble missing: %q", got)
 	}
-	for _, absent := range []string{"ONLY way to read metrics", "search logs", "gated tools"} {
+	for _, absent := range []string{"ONLY way to read metrics", "search logs", "gated tools", "vendor documentation", "procedural recommendation"} {
 		if strings.Contains(got, absent) {
 			t.Errorf("%q present with nothing registered: %q", absent, got)
 		}
@@ -367,7 +378,7 @@ func (s *fakeMCPSession) Close() error { return nil }
 func TestDuplicateToolNamesAcrossServersFailStartup(t *testing.T) {
 	connect := func(context.Context) (MCPSession, error) { return &fakeMCPSession{}, nil }
 	_, err := NewRegistry(context.Background(),
-		[]MCPServer{{Name: "first", Connect: connect}, {Name: "second", Connect: connect}}, nil, nil, nil)
+		[]MCPServer{{Name: "first", Connect: connect}, {Name: "second", Connect: connect}}, nil, nil, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), `second: duplicate tool "repair"`) {
 		t.Fatalf("collision error = %v", err)
 	}
@@ -384,7 +395,7 @@ func TestNativeSourcesRegisterNamedTools(t *testing.T) {
 		return NativeSource{Name: name, Client: server.Client(), BaseURL: server.URL}
 	}
 	registry, err := NewRegistry(context.Background(), nil, nil,
-		[]NativeSource{source("prometheus"), source("vm")}, []NativeSource{source("loki")})
+		[]NativeSource{source("prometheus"), source("vm")}, []NativeSource{source("loki")}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +432,7 @@ func TestNativeSourceErrorsCarrySourceName(t *testing.T) {
 	}))
 	defer server.Close()
 	registry, err := NewRegistry(context.Background(), nil, nil, nil,
-		[]NativeSource{{Name: "loki", Client: server.Client(), BaseURL: server.URL}})
+		[]NativeSource{{Name: "loki", Client: server.Client(), BaseURL: server.URL}}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +455,7 @@ func TestRegistryReconnectsAndRetriesFailedToolCall(t *testing.T) {
 		connects++
 		return session, nil
 	}
-	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}}, nil, nil, nil)
+	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}}, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +483,7 @@ func TestRegistryNeverRetriesGatedToolCall(t *testing.T) {
 		return session, nil
 	}
 	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}},
-		map[string]bool{"repair": true}, nil, nil)
+		map[string]bool{"repair": true}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +512,7 @@ func TestGatedCallOnDeadSessionReconnectsBeforeSubmitting(t *testing.T) {
 		return session, nil
 	}
 	registry, err := NewRegistry(context.Background(), []MCPServer{{Name: "fake", Connect: connect}},
-		map[string]bool{"repair": true}, nil, nil)
+		map[string]bool{"repair": true}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

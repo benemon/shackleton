@@ -331,3 +331,38 @@ func TestLoadValidatesSweeps(t *testing.T) {
 		}
 	}
 }
+
+func TestKnowledgeSourceValidation(t *testing.T) {
+	t.Setenv("CONFIG_RH_TOKEN", "offline-token")
+	valid := "knowledge_sources:\n" +
+		"  - name: redhat\n    type: redhat\n    auth: {env: CONFIG_RH_TOKEN}\n" +
+		"  - name: hashicorp\n    type: generic\n    sites: [\"https://developer.hashicorp.com\"]\n" +
+		"knowledge_search:\n  type: searxng\n  url: http://127.0.0.1:8280\n"
+	cfg, err := Load(validConfig(t, valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.KnowledgeSources) != 2 || cfg.KnowledgeSources[0].Auth.Value() != "offline-token" {
+		t.Fatalf("knowledge sources = %+v", cfg.KnowledgeSources)
+	}
+	if cfg.KnowledgeSearch == nil || cfg.KnowledgeSearch.URL != "http://127.0.0.1:8280" {
+		t.Fatalf("knowledge search = %+v", cfg.KnowledgeSearch)
+	}
+	for _, test := range []struct {
+		wantErr string
+		extra   string
+	}{
+		{"knowledge_sources[0].type \"wiki\" is not supported", "knowledge_sources:\n  - name: w\n    type: wiki\n"},
+		{"knowledge_sources[0].auth is required", "knowledge_sources:\n  - name: redhat\n    type: redhat\n"},
+		{"knowledge_sources[0].sites is not used by type redhat", "knowledge_sources:\n  - name: redhat\n    type: redhat\n    auth: {env: CONFIG_RH_TOKEN}\n    sites: [\"https://x.example\"]\n"},
+		{"knowledge_sources[0].sites requires at least one site", "knowledge_sources:\n  - name: docs\n    type: generic\n"},
+		{"knowledge_sources[0].sites[0] must be an absolute http(s) URL", "knowledge_sources:\n  - name: docs\n    type: generic\n    sites: [\"developer.hashicorp.com\"]\n"},
+		{"knowledge_sources[1].name \"docs\" is duplicated", "knowledge_sources:\n  - name: docs\n    type: generic\n    sites: [\"https://a.example\"]\n  - name: docs\n    type: generic\n    sites: [\"https://b.example\"]\n"},
+		{"knowledge_search.type \"google\" is not supported", "knowledge_search:\n  type: google\n  url: http://x\n"},
+		{"knowledge_search.url is required", "knowledge_search:\n  type: searxng\n"},
+	} {
+		if _, err := Load(validConfig(t, test.extra)); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+			t.Errorf("want %q, got %v", test.wantErr, err)
+		}
+	}
+}

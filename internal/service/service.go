@@ -47,22 +47,24 @@ type ApprovalEvent struct {
 }
 
 type ConfigView struct {
-	Listen         string           `json:"listen"`
-	StateDir       string           `json:"state_dir"`
-	KBDir          string           `json:"kb_dir"`
-	InventoryDir   string           `json:"inventory_dir"`
-	EnvFiles       []string         `json:"env_files"`
-	Model          ModelView        `json:"model"`
-	MCPServers     []MCPServerView  `json:"mcp_servers"`
-	MetricsSources []SourceView     `json:"metrics_sources"`
-	LogsSources    []SourceView     `json:"logs_sources"`
-	GatedTools     []string         `json:"gated_tools"`
-	Notifications  []ChannelView    `json:"notifications"`
-	Approvals      []ChannelView    `json:"approvals"`
-	Agent          AgentView        `json:"agent"`
-	Sweeps         []SweepView      `json:"sweeps"`
-	APIToken       config.SecretRef `json:"api_token"`
-	TLS            TLSView          `json:"tls"`
+	Listen           string                `json:"listen"`
+	StateDir         string                `json:"state_dir"`
+	KBDir            string                `json:"kb_dir"`
+	InventoryDir     string                `json:"inventory_dir"`
+	EnvFiles         []string              `json:"env_files"`
+	Model            ModelView             `json:"model"`
+	MCPServers       []MCPServerView       `json:"mcp_servers"`
+	MetricsSources   []SourceView          `json:"metrics_sources"`
+	LogsSources      []SourceView          `json:"logs_sources"`
+	KnowledgeSources []KnowledgeSourceView `json:"knowledge_sources"`
+	KnowledgeSearch  *KnowledgeSearchView  `json:"knowledge_search,omitempty"`
+	GatedTools       []string              `json:"gated_tools"`
+	Notifications    []ChannelView         `json:"notifications"`
+	Approvals        []ChannelView         `json:"approvals"`
+	Agent            AgentView             `json:"agent"`
+	Sweeps           []SweepView           `json:"sweeps"`
+	APIToken         config.SecretRef      `json:"api_token"`
+	TLS              TLSView               `json:"tls"`
 }
 
 type TLSView struct {
@@ -93,6 +95,18 @@ type SourceView struct {
 	Type       string            `json:"type"`
 	URL        string            `json:"url"`
 	AuthHeader *config.SecretRef `json:"auth_header,omitempty"`
+}
+
+type KnowledgeSourceView struct {
+	Name  string            `json:"name"`
+	Type  string            `json:"type"`
+	Sites []string          `json:"sites,omitempty"`
+	Auth  *config.SecretRef `json:"auth,omitempty"`
+}
+
+type KnowledgeSearchView struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
 }
 
 type ChannelView struct {
@@ -687,6 +701,19 @@ func (s *Service) ConfigView() ConfigView {
 	for _, source := range cfg.LogsSources {
 		logs = append(logs, sourceView(source.Name, source.Type, source.URL, source.AuthHeader))
 	}
+	knowledge := make([]KnowledgeSourceView, 0, len(cfg.KnowledgeSources))
+	for _, source := range cfg.KnowledgeSources {
+		view := KnowledgeSourceView{Name: source.Name, Type: source.Type, Sites: append([]string{}, source.Sites...)}
+		if source.Auth.IsSet() {
+			ref := source.Auth.Ref()
+			view.Auth = &ref
+		}
+		knowledge = append(knowledge, view)
+	}
+	var knowledgeSearch *KnowledgeSearchView
+	if cfg.KnowledgeSearch != nil {
+		knowledgeSearch = &KnowledgeSearchView{Type: cfg.KnowledgeSearch.Type, URL: cfg.KnowledgeSearch.URL}
+	}
 	channelViews := func(channels []config.Channel) []ChannelView {
 		views := make([]ChannelView, 0, len(channels))
 		for _, channel := range channels {
@@ -702,6 +729,7 @@ func (s *Service) ConfigView() ConfigView {
 		Model:          ModelView{BaseURL: cfg.Model.BaseURL, Name: cfg.Model.Name, APIKey: cfg.Model.APIKey.Ref()},
 		MCPServers:     servers,
 		MetricsSources: metrics, LogsSources: logs,
+		KnowledgeSources: knowledge, KnowledgeSearch: knowledgeSearch,
 		Notifications: channelViews(cfg.Notifications), Approvals: channelViews(cfg.Approvals),
 		GatedTools: append([]string{}, cfg.GatedTools...),
 		Agent: AgentView{Prompt: cfg.Agent.Prompt, MaxRounds: cfg.Agent.MaxRounds, MaxToolResultChars: cfg.Agent.MaxToolResultChars,

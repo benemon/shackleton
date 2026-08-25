@@ -99,7 +99,7 @@ api_token: {env: SERVICE_API_SECRET}
 
 func completedRunnerFactory(t *testing.T, answer string) RunnerFactory {
 	t.Helper()
-	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func approvalRunnerFactory(t *testing.T) RunnerFactory {
 	t.Helper()
 	registry, err := agent.NewRegistry(context.Background(), []agent.MCPServer{{
 		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return approvalSession{}, nil },
-	}}, map[string]bool{"repair": true}, nil, nil)
+	}}, map[string]bool{"repair": true}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestMissingVerdictTriggersOneExtractionCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -740,7 +740,7 @@ func waitForSSE(t *testing.T, events <-chan string, scanErrors <-chan error, wan
 
 func blockingRunnerFactory(t *testing.T) RunnerFactory {
 	t.Helper()
-	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1045,7 +1045,7 @@ func TestNotificationHeadlineIsBounded(t *testing.T) {
 
 func emptyRegistry(t *testing.T) *agent.Registry {
 	t.Helper()
-	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1183,7 +1183,7 @@ func TestVerifiedResolutionsNominateDraftOnce(t *testing.T) {
 	}
 	registry, err := agent.NewRegistry(context.Background(), []agent.MCPServer{{
 		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return approvalSession{}, nil },
-	}}, map[string]bool{"repair": true}, nil, nil)
+	}}, map[string]bool{"repair": true}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

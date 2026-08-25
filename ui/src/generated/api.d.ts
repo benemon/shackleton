@@ -405,6 +405,18 @@ export interface components {
             url: string;
             auth_header?: components["schemas"]["SecretRef"];
         };
+        KnowledgeSourceView: {
+            name: string;
+            /** @enum {string} */
+            type: "redhat" | "generic";
+            sites?: string[];
+            auth?: components["schemas"]["SecretRef"];
+        };
+        KnowledgeSearchView: {
+            /** @enum {string} */
+            type: "searxng";
+            url: string;
+        };
         KBArticleMeta: {
             slug: string;
             title: string;
@@ -475,6 +487,8 @@ export interface components {
             }[];
             metrics_sources: components["schemas"]["SourceView"][];
             logs_sources: components["schemas"]["SourceView"][];
+            knowledge_sources: components["schemas"]["KnowledgeSourceView"][];
+            knowledge_search?: components["schemas"]["KnowledgeSearchView"];
             gated_tools: string[];
             notifications: components["schemas"]["ChannelView"][];
             approvals: components["schemas"]["ChannelView"][];

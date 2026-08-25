@@ -39,7 +39,7 @@ func testService(t *testing.T, answer string, fail error) *service.Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil)
+	registry, err := agent.NewRegistry(context.Background(), nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

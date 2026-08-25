@@ -59,7 +59,7 @@ type reconnectingSession struct {
 	session MCPSession
 }
 
-func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string]bool, metrics, logs []NativeSource) (*Registry, error) {
+func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string]bool, metrics, logs []NativeSource, knowledge []KnowledgeSource, search *KnowledgeSearch) (*Registry, error) {
 	r := &Registry{tools: make(map[string]toolEntry)}
 	for _, server := range servers {
 		session, err := server.Connect(ctx)
@@ -104,6 +104,10 @@ func NewRegistry(ctx context.Context, servers []MCPServer, gatedTools map[string
 			r.Close()
 			return nil, err
 		}
+	}
+	if err := r.addKnowledgeSources(knowledge, search); err != nil {
+		r.Close()
+		return nil, err
 	}
 	return r, nil
 }

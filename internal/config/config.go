@@ -125,6 +125,25 @@ type LogsSource struct {
 	AuthHeader Secret `yaml:"auth_header,omitempty"`
 }
 
+// KnowledgeSource is a named vendor documentation or knowledge-base source.
+// Type redhat is the Customer Portal KB API (auth = offline API token,
+// exchanged for short-lived access tokens); type generic is an allowlisted
+// set of documentation sites — the sites list IS the allowlist, fetch is
+// always available and search requires a knowledge_search backend.
+type KnowledgeSource struct {
+	Name  string   `yaml:"name"`
+	Type  string   `yaml:"type"`
+	Sites []string `yaml:"sites,omitempty"`
+	Auth  Secret   `yaml:"auth,omitempty"`
+}
+
+// KnowledgeSearch is the shared search backend generic knowledge sources
+// query through. Type searxng is the only implemented type.
+type KnowledgeSearch struct {
+	Type string `yaml:"type"`
+	URL  string `yaml:"url"`
+}
+
 // Channel is a named delivery channel instance, used by both the
 // notifications list (unprivileged: sweep verdicts, answers, the Q&A
 // trigger) and the approvals list (privileged: Approve/Deny). The same type
@@ -160,22 +179,24 @@ type Sweep struct {
 func (s Sweep) Parsed() cron.Schedule { return s.schedule }
 
 type Config struct {
-	Listen         string          `yaml:"listen"`
-	TLS            TLS             `yaml:"tls,omitempty"`
-	StateDir       string          `yaml:"state_dir"`
-	KBDir          string          `yaml:"kb_dir,omitempty"`
-	InventoryDir   string          `yaml:"inventory_dir,omitempty"`
-	EnvFiles       []string        `yaml:"env_files,omitempty"`
-	Model          Model           `yaml:"model"`
-	MCPServers     []MCPServer     `yaml:"mcp_servers"`
-	MetricsSources []MetricsSource `yaml:"metrics_sources,omitempty"`
-	LogsSources    []LogsSource    `yaml:"logs_sources,omitempty"`
-	GatedTools     []string        `yaml:"gated_tools"`
-	Notifications  []Channel       `yaml:"notifications,omitempty"`
-	Approvals      []Channel       `yaml:"approvals,omitempty"`
-	Agent          Agent           `yaml:"agent"`
-	Sweeps         []Sweep         `yaml:"sweeps,omitempty"`
-	APIToken       Secret          `yaml:"api_token"`
+	Listen           string            `yaml:"listen"`
+	TLS              TLS               `yaml:"tls,omitempty"`
+	StateDir         string            `yaml:"state_dir"`
+	KBDir            string            `yaml:"kb_dir,omitempty"`
+	InventoryDir     string            `yaml:"inventory_dir,omitempty"`
+	EnvFiles         []string          `yaml:"env_files,omitempty"`
+	Model            Model             `yaml:"model"`
+	MCPServers       []MCPServer       `yaml:"mcp_servers"`
+	MetricsSources   []MetricsSource   `yaml:"metrics_sources,omitempty"`
+	LogsSources      []LogsSource      `yaml:"logs_sources,omitempty"`
+	KnowledgeSources []KnowledgeSource `yaml:"knowledge_sources,omitempty"`
+	KnowledgeSearch  *KnowledgeSearch  `yaml:"knowledge_search,omitempty"`
+	GatedTools       []string          `yaml:"gated_tools"`
+	Notifications    []Channel         `yaml:"notifications,omitempty"`
+	Approvals        []Channel         `yaml:"approvals,omitempty"`
+	Agent            Agent             `yaml:"agent"`
+	Sweeps           []Sweep           `yaml:"sweeps,omitempty"`
+	APIToken         Secret            `yaml:"api_token"`
 }
 
 func Load(path string) (*Config, error) {
@@ -267,6 +288,49 @@ func (c *Config) applyDefaultsAndValidate() error {
 		}
 		if err := source.AuthHeader.resolve(prefix+".auth_header", false); err != nil {
 			return err
+		}
+	}
+	knowledgeNames := make(map[string]bool, len(c.KnowledgeSources))
+	for i := range c.KnowledgeSources {
+		source := &c.KnowledgeSources[i]
+		prefix := fmt.Sprintf("knowledge_sources[%d]", i)
+		if source.Name == "" {
+			return fmt.Errorf("%s.name is required", prefix)
+		}
+		if knowledgeNames[source.Name] {
+			return fmt.Errorf("%s.name %q is duplicated", prefix, source.Name)
+		}
+		knowledgeNames[source.Name] = true
+		switch source.Type {
+		case "redhat":
+			if len(source.Sites) > 0 {
+				return fmt.Errorf("%s.sites is not used by type redhat", prefix)
+			}
+			if err := source.Auth.resolve(prefix+".auth", true); err != nil {
+				return err
+			}
+		case "generic":
+			if len(source.Sites) == 0 {
+				return fmt.Errorf("%s.sites requires at least one site", prefix)
+			}
+			for j, site := range source.Sites {
+				if !strings.HasPrefix(site, "https://") && !strings.HasPrefix(site, "http://") {
+					return fmt.Errorf("%s.sites[%d] must be an absolute http(s) URL", prefix, j)
+				}
+			}
+			if err := source.Auth.resolve(prefix+".auth", false); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%s.type %q is not supported (want redhat or generic)", prefix, source.Type)
+		}
+	}
+	if c.KnowledgeSearch != nil {
+		if c.KnowledgeSearch.Type != "searxng" {
+			return fmt.Errorf("knowledge_search.type %q is not supported (want searxng)", c.KnowledgeSearch.Type)
+		}
+		if c.KnowledgeSearch.URL == "" {
+			return fmt.Errorf("knowledge_search.url is required")
 		}
 	}
 	if err := validateChannels("notifications", c.Notifications); err != nil {
