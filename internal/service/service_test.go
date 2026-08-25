@@ -134,7 +134,7 @@ func approvalRunnerFactory(t *testing.T, result string) RunnerFactory {
 				if completion == 1 {
 					return agent.ModelMessage{ToolCalls: []agent.ModelToolCall{{Name: "repair", Arguments: `{"target":"node1"}`, ID: "call"}}}, nil
 				}
-				return agent.ModelMessage{Content: "done"}, nil
+				return agent.ModelMessage{Content: "done\n```json\n{\"verdict\":\"action\",\"summary\":\"csv stuck\",\"evidence\":[\"phase Pending\"]}\n```\n"}, nil
 			},
 		}
 	}
@@ -1074,22 +1074,28 @@ func emptyRegistry(t *testing.T) *agent.Registry {
 }
 
 func TestResolutionRecordedToKB(t *testing.T) {
-	answer := "found it\n```json\n{\"verdict\":\"action\",\"summary\":\"csv stuck\",\"evidence\":[\"phase Pending\"]}\n```\n"
 	audit, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := New(context.Background(), audit, nil, func(events agent.EventSink, approver agent.Approver) *agent.Runner {
-		return &agent.Runner{Complete: func(context.Context, []openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionToolUnionParam) (agent.ModelMessage, error) {
-			return agent.ModelMessage{Content: answer}, nil
-		}, Tools: emptyRegistry(t)}
-	})
+	svc := New(context.Background(), audit, nil, approvalRunnerFactory(t, "repaired"))
 	kbStore, err := kb.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	svc.KB = kbStore
 	if _, err := svc.CreateInvestigation(context.Background(), "Alertmanager alert firing: CsvAbnormal.\nLabels:", "alert:fp123"); err != nil {
+		t.Fatal(err)
+	}
+	var pending []PendingApproval
+	for i := 0; i < 200 && len(pending) == 0; i++ {
+		pending = svc.ListPendingApprovals()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %+v", pending)
+	}
+	if err := svc.DecideApproval(pending[0].ID, true, "test"); err != nil {
 		t.Fatal(err)
 	}
 	svc.Wait()
@@ -1112,7 +1118,8 @@ func TestResolutionRecordedToKB(t *testing.T) {
 		"## Diagnosis\nInvestigation ",
 		"- phase Pending",
 		"## Root cause\ncsv stuck",
-		"## Resolution\nNo remediation applied.",
+		"## Resolution\n- Approved: ",
+		"→ repaired",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("article missing %q:\n%s", want, content)
@@ -1120,20 +1127,29 @@ func TestResolutionRecordedToKB(t *testing.T) {
 	}
 	// The KCS sections carry structured fields only: no answer text, no
 	// verdict block, no triage question, no prompt boilerplate.
-	for _, reject := range []string{"found it", "```json", "Alertmanager alert firing", "## Verdict", "## Environment"} {
+	for _, reject := range []string{"```json", "Alertmanager alert firing", "## Verdict", "## Environment", "No remediation applied"} {
 		if strings.Contains(content, reject) {
 			t.Fatalf("article should not contain %q:\n%s", reject, content)
 		}
 	}
-	// A healthy investigation with no actions must not create an article.
-	answer = "fine\n```json\n{\"verdict\":\"healthy\",\"summary\":\"ok\",\"evidence\":[]}\n```\n"
-	if _, err := svc.CreateInvestigation(context.Background(), "Alertmanager alert firing: OtherAlert.\n", "alert:fp999"); err != nil {
+	// A verdict without a remediation is an observation, not an article —
+	// the investigations list is its record.
+	audit2, err := store.Open(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	svc.Wait()
-	articles, _ = kbStore.List()
-	if len(articles) != 1 {
-		t.Fatalf("healthy investigation created an article: %+v", articles)
+	svc2 := New(context.Background(), audit2, nil, completedRunnerFactory(t, "found it\n```json\n{\"verdict\":\"action\",\"summary\":\"csv stuck\",\"evidence\":[\"phase Pending\"]}\n```\n"))
+	kbStore2, err := kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc2.KB = kbStore2
+	if _, err := svc2.CreateInvestigation(context.Background(), "Alertmanager alert firing: OtherAlert.\n", "alert:fp999"); err != nil {
+		t.Fatal(err)
+	}
+	svc2.Wait()
+	if articles, _ := kbStore2.List(); len(articles) != 0 {
+		t.Fatalf("verdict-only investigation created an article: %+v", articles)
 	}
 }
 
@@ -1162,6 +1178,14 @@ func TestRecurrenceContextInjected(t *testing.T) {
 	first := svc.ListInvestigations()
 	if len(first) != 1 || strings.Contains(first[0].Question, "Prior history") {
 		t.Fatalf("first occurrence should have no history: %+v", first)
+	}
+	// Articles only exist for remediated symptoms; seed one as a fixture so
+	// the draft-vs-approved citation rule stays exercised.
+	if _, err := kbStore.Record(kb.Article{FrontMatter: kb.FrontMatter{
+		Slug: "alert-stuckcsv", Title: "StuckCsv (alert)",
+		Symptom: kb.Symptom{Trigger: "alert", Alertname: "StuckCsv"},
+	}, Body: "# StuckCsv (alert)\n"}); err != nil {
+		t.Fatal(err)
 	}
 	alert.Fingerprint = "fp2"
 	if _, _, err := svc.IngestAlerts(context.Background(), []Alert{alert}); err != nil {

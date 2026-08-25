@@ -206,7 +206,7 @@ func (s *Service) CreateInvestigation(_ context.Context, question, trigger strin
 		}
 		_ = investigation.Close()
 		s.notifyOutcome(investigation.ID, question, trigger, verdict, runErr)
-		s.recordResolution(investigation.ID, question, trigger, verdict, metrics.Answer, runErr)
+		s.recordResolution(investigation.ID, question, trigger, verdict, runErr)
 		class := triggerClass(trigger)
 		investigationsTotal.WithLabelValues(class, status).Inc()
 		investigationSeconds.WithLabelValues(class).Observe(metrics.Duration.Seconds())
@@ -250,7 +250,7 @@ func (s *Service) notifyOutcome(id, question, trigger string, verdict *store.Ver
 	}
 }
 
-func (s *Service) recordResolution(id, question, trigger string, verdict *store.Verdict, answer string, runErr error) {
+func (s *Service) recordResolution(id, question, trigger string, verdict *store.Verdict, runErr error) {
 	if s.KB == nil || runErr != nil {
 		return
 	}
@@ -260,17 +260,12 @@ func (s *Service) recordResolution(id, question, trigger string, verdict *store.
 		return
 	}
 	actions, remediated := approvedActions(events)
-	// The KB records resolutions, never current state. Alerts and sweeps
-	// carry stable symptom identities, so a non-healthy verdict is a
-	// recurrence worth remembering; an ad-hoc question earns an article only
-	// when an approved remediation ran and succeeded — a call the executor
-	// refused or failed is a probe, not a resolution.
-	symptomatic := strings.HasPrefix(trigger, "alert:") || strings.HasPrefix(trigger, "sweep:")
-	if symptomatic {
-		if len(actions) == 0 && (verdict == nil || verdict.Verdict == "healthy") {
-			return
-		}
-	} else if !remediated {
+	// The KB records resolutions, never observations: an article exists only
+	// when an approved action executed and succeeded, on any trigger — a
+	// verdict alone is the investigations list's business, and a call the
+	// executor refused or failed is a probe, not a resolution. Alert and
+	// sweep slugs still accrue occurrences across remediated recurrences.
+	if !remediated {
 		return
 	}
 	article := buildArticle(id, question, trigger, verdict, s.environmentSummary(), actions)
@@ -373,9 +368,6 @@ func buildArticle(id, question, trigger string, verdict *store.Verdict, environm
 		b.WriteString(strings.TrimSpace(verdict.Summary) + "\n")
 	}
 	b.WriteString("\n## Resolution\n")
-	if len(actions) == 0 {
-		b.WriteString("No remediation applied.\n")
-	}
 	for _, action := range actions {
 		b.WriteString("- Approved: " + action.Human + " → " + action.Outcome + "\n")
 	}
