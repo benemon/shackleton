@@ -168,4 +168,12 @@ clusters:
 			t.Errorf("Environment() contains inert standalone host %q:\n%s", unwanted, got)
 		}
 	}
+
+	if summary := inv.Summary(); summary != "Clusters: ocp (openshift); hosts: nas, winbox." {
+		t.Errorf("Summary() = %q", summary)
+	}
+	empty := &Inventory{}
+	if summary := empty.Summary(); summary != "" {
+		t.Errorf("empty Summary() = %q", summary)
+	}
 }

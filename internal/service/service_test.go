@@ -1107,13 +1107,23 @@ func TestResolutionRecordedToKB(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(raw)
-	for _, want := range []string{"## Root cause", "found it", "No remediation applied", "action: csv stuck", "- phase Pending"} {
+	for _, want := range []string{
+		"## Issue\nAlert CsvAbnormal firing.",
+		"## Diagnosis\nInvestigation ",
+		"- phase Pending",
+		"## Root cause\ncsv stuck",
+		"## Resolution\nNo remediation applied.",
+	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("article missing %q:\n%s", want, content)
 		}
 	}
-	if strings.Contains(content, "```json") {
-		t.Fatalf("verdict block should be stripped from root cause: %s", content)
+	// The KCS sections carry structured fields only: no answer text, no
+	// verdict block, no triage question, no prompt boilerplate.
+	for _, reject := range []string{"found it", "```json", "Alertmanager alert firing", "## Verdict", "## Environment"} {
+		if strings.Contains(content, reject) {
+			t.Fatalf("article should not contain %q:\n%s", reject, content)
+		}
 	}
 	// A healthy investigation with no actions must not create an article.
 	answer = "fine\n```json\n{\"verdict\":\"healthy\",\"summary\":\"ok\",\"evidence\":[]}\n```\n"

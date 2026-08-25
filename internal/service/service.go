@@ -273,7 +273,7 @@ func (s *Service) recordResolution(id, question, trigger string, verdict *store.
 	} else if !remediated {
 		return
 	}
-	article := buildArticle(id, question, trigger, verdict, answer, s.environmentText(), events, actions)
+	article := buildArticle(id, question, trigger, verdict, s.environmentSummary(), actions)
 	front, err := s.KB.Record(article)
 	if err != nil {
 		log.Printf("kb: record %s: %v", article.Slug, err)
@@ -293,17 +293,11 @@ func (s *Service) recordResolution(id, question, trigger string, verdict *store.
 	}
 }
 
-func (s *Service) environmentText() string {
-	var parts []string
-	if s.config != nil && s.config.Agent.Prompt != "" {
-		parts = append(parts, s.config.Agent.Prompt)
+func (s *Service) environmentSummary() string {
+	if s.Inventory == nil {
+		return ""
 	}
-	if s.Inventory != nil {
-		if env := s.Inventory.Environment(); env != "" {
-			parts = append(parts, env)
-		}
-	}
-	return strings.Join(parts, "\n\n")
+	return s.Inventory.Summary()
 }
 
 func approvedActions(events []store.Event) (actions []kb.Action, remediated bool) {
@@ -354,31 +348,31 @@ func approvedActions(events []store.Event) (actions []kb.Action, remediated bool
 	return actions, remediated
 }
 
-func buildArticle(id, question, trigger string, verdict *store.Verdict, answer, environment string, events []store.Event, actions []kb.Action) kb.Article {
+// buildArticle fills the KCS sections from structured fields only: the
+// question, tool trace, and answer stay on the investigation record.
+func buildArticle(id, question, trigger string, verdict *store.Verdict, environment string, actions []kb.Action) kb.Article {
 	slug, title, symptom := symptomIdentity(id, question, trigger)
 	var b strings.Builder
-	b.WriteString("# " + title + "\n\n## Environment\n" + orNone(environment, "(no operator preamble configured)"))
-	b.WriteString("\n\n## Issue\nTrigger: " + trigger + "\n\n" + question)
-	b.WriteString("\n\n## Diagnosis\nInvestigation " + id + ":\n")
-	listed := 0
-	for _, event := range events {
-		if event.Type != store.EventToolCall || listed >= 30 {
-			continue
-		}
-		var payload store.ToolCallPayload
-		if json.Unmarshal(event.Payload, &payload) != nil {
-			continue
-		}
-		status := "ok"
-		if payload.Error {
-			status = "error"
-		}
-		args, _ := json.Marshal(payload.Args)
-		b.WriteString("- " + payload.Name + " " + truncate(string(args), 120) + " → " + status + "\n")
-		listed++
+	b.WriteString("# " + title + "\n")
+	if environment != "" {
+		b.WriteString("\n## Environment\n" + environment + "\n")
 	}
-	b.WriteString("\n## Root cause\n" + strings.TrimSpace(store.StripVerdictBlock(answer)))
-	b.WriteString("\n\n## Resolution\n")
+	b.WriteString("\n## Issue\n" + issueLine(title, symptom, verdict) + "\n")
+	b.WriteString("\n## Diagnosis\nInvestigation " + id + ":\n")
+	if verdict == nil || len(verdict.Evidence) == 0 {
+		b.WriteString("No structured evidence was recorded.\n")
+	} else {
+		for _, item := range verdict.Evidence {
+			b.WriteString("- " + item + "\n")
+		}
+	}
+	b.WriteString("\n## Root cause\n")
+	if verdict == nil || strings.TrimSpace(verdict.Summary) == "" {
+		b.WriteString("Not established.\n")
+	} else {
+		b.WriteString(strings.TrimSpace(verdict.Summary) + "\n")
+	}
+	b.WriteString("\n## Resolution\n")
 	if len(actions) == 0 {
 		b.WriteString("No remediation applied.\n")
 	}
@@ -394,12 +388,22 @@ func buildArticle(id, question, trigger string, verdict *store.Verdict, answer, 
 		Resolution:  kb.Resolution{Actions: actions, Verified: orNone(verified, "none")}}
 	if verdict != nil {
 		front.Verdict = verdict.Verdict
-		b.WriteString("\n## Verdict\n" + verdict.Verdict + ": " + verdict.Summary + "\n")
-		for _, item := range verdict.Evidence {
-			b.WriteString("- " + item + "\n")
-		}
 	}
 	return kb.Article{FrontMatter: front, Body: b.String()}
+}
+
+func issueLine(title string, symptom kb.Symptom, verdict *store.Verdict) string {
+	switch symptom.Trigger {
+	case "alert":
+		return "Alert " + symptom.Alertname + " firing."
+	case "sweep":
+		if verdict != nil {
+			return "Scheduled sweep " + symptom.Sweep + " raised " + verdict.Verdict + "."
+		}
+		return "Scheduled sweep " + symptom.Sweep + "."
+	default:
+		return title
+	}
 }
 
 func symptomIdentity(id, question, trigger string) (string, string, kb.Symptom) {

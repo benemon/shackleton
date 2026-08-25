@@ -174,6 +174,31 @@ func (inv *Inventory) KnownTargets() []string {
 	return names
 }
 
+// Summary is the one-line estate description KB articles carry as their
+// Environment; the full fact block stays prompt-facing via Environment.
+func (inv *Inventory) Summary() string {
+	var clusters, hosts []string
+	for _, cluster := range inv.Clusters {
+		clusters = append(clusters, cluster.Name+" ("+cluster.Type+")")
+	}
+	for _, host := range inv.Hosts {
+		if !host.inert() {
+			hosts = append(hosts, host.Name)
+		}
+	}
+	var parts []string
+	if len(clusters) > 0 {
+		parts = append(parts, "Clusters: "+strings.Join(clusters, ", "))
+	}
+	if len(hosts) > 0 {
+		parts = append(parts, "hosts: "+strings.Join(hosts, ", "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ") + "."
+}
+
 // Environment renders the inventory as fact lines for the system prompt and
 // KB articles; judgement prose stays in the operator preamble.
 func (inv *Inventory) Environment() string {
