@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
@@ -122,7 +123,7 @@ func New(ctx context.Context, token, chatID string, timeout time.Duration) (*Ada
 }
 
 func (a *Adapter) Send(ctx context.Context, text string) error {
-	_, err := a.bot.sendMessage(ctx, a.chatID, truncate(text, 3800), nil)
+	_, err := a.bot.sendMessage(ctx, a.chatID, truncate(text, 3800), "", nil)
 	return err
 }
 
@@ -134,7 +135,7 @@ func (a *Adapter) RequestApproval(ctx context.Context, call agent.ToolCall) (age
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 	keyboard := approvalKeyboard(nonce)
 	text := "Proposed action:\n\n" + call.Human + "\n\nApprove to execute."
-	messageID, err := a.bot.sendMessage(ctx, a.chatID, text, keyboard)
+	messageID, err := a.bot.sendMessage(ctx, a.chatID, text, "", keyboard)
 	if err != nil {
 		return agent.Decision{}, err
 	}
@@ -240,7 +241,7 @@ func NewNotifier(token, chatID string) (*Notifier, error) {
 }
 
 func (n *Notifier) Send(ctx context.Context, text string) error {
-	_, err := n.bot.sendMessage(ctx, n.chatID, truncate(text, 3800), nil)
+	_, err := n.bot.sendMessage(ctx, n.chatID, truncate(text, 3800), "", nil)
 	return err
 }
 
@@ -328,7 +329,7 @@ func (t *Trigger) handleMessage(ctx context.Context, message message) {
 		log.Printf("telegram create investigation: %v", err)
 		return
 	}
-	if _, err := t.bot.sendMessage(ctx, message.Chat.ID, "Investigating…", nil); err != nil {
+	if _, err := t.bot.sendMessage(ctx, message.Chat.ID, "Investigating…", "", nil); err != nil {
 		log.Printf("telegram send acknowledgement: %v", err)
 	}
 	go t.followInvestigation(ctx, message.Chat.ID, summary.ID)
@@ -359,7 +360,7 @@ func (t *Trigger) followInvestigation(ctx context.Context, chatID int64, id stri
 }
 
 func (t *Trigger) sendTerminal(ctx context.Context, chatID int64, id string, event store.Event) bool {
-	var text string
+	var text, formatted, parseMode string
 	switch event.Type {
 	case store.EventCompleted:
 		var payload store.CompletedPayload
@@ -367,7 +368,32 @@ func (t *Trigger) sendTerminal(ctx context.Context, chatID int64, id string, eve
 			log.Printf("telegram decode completed event: %v", err)
 			return true
 		}
-		text = payload.Answer
+		text = store.StripVerdictBlock(payload.Answer)
+		verdictLine := ""
+		if payload.Verdict != nil {
+			verdictLine = "verdict: " + payload.Verdict.Verdict + " — " + payload.Verdict.Summary
+		}
+		if strings.TrimSpace(text) == "" && verdictLine == "" {
+			text = "Investigation " + id + " ended without an answer — check the console."
+		}
+		// The verdict line is bounded hard so the remaining answer budget can
+		// never go negative — truncate panics on a negative limit.
+		verdictLine = truncate(verdictLine, 500)
+		limit := 3800
+		if verdictLine != "" {
+			limit -= utf8.RuneCountInString(verdictLine) + 2
+		}
+		text = strings.TrimRight(truncate(text, limit), "\n")
+		formatted = markdownToTelegramHTML(text)
+		if verdictLine != "" {
+			if text != "" {
+				text += "\n"
+				formatted += "\n"
+			}
+			text += verdictLine
+			formatted += html.EscapeString(verdictLine)
+		}
+		parseMode = "HTML"
 	case store.EventFailed:
 		var payload store.FailedPayload
 		if err := json.Unmarshal(event.Payload, &payload); err != nil {
@@ -383,7 +409,17 @@ func (t *Trigger) sendTerminal(ctx context.Context, chatID int64, id string, eve
 	if strings.TrimSpace(text) == "" {
 		text = "Investigation " + id + " ended without an answer — check the console."
 	}
-	if _, err := t.bot.sendMessage(ctx, chatID, truncate(text, 3800), nil); err != nil {
+	if parseMode == "" {
+		formatted = truncate(text, 3800)
+	}
+	if _, err := t.bot.sendMessage(ctx, chatID, formatted, parseMode, nil); err != nil {
+		if parseMode != "" {
+			if _, retryErr := t.bot.sendMessage(ctx, chatID, text, "", nil); retryErr == nil {
+				return true
+			} else {
+				log.Printf("telegram send investigation result retry: %v", retryErr)
+			}
+		}
 		log.Printf("telegram send investigation result: %v", err)
 	}
 	return true
@@ -412,7 +448,7 @@ func (t *Trigger) requestApproval(ctx context.Context, approval service.PendingA
 	text := "Proposed action:\n\n" + approval.Human + "\n\nApprove to execute."
 	var posted []postedApproval
 	for _, chatID := range t.approvalChats() {
-		messageID, err := t.bot.sendMessage(ctx, chatID, text, approvalKeyboard(approval.ID))
+		messageID, err := t.bot.sendMessage(ctx, chatID, text, "", approvalKeyboard(approval.ID))
 		if err != nil {
 			log.Printf("telegram send approval: %v", err)
 			continue
@@ -554,8 +590,11 @@ func (b *bot) getUpdates(ctx context.Context, offset int64, allowed []string) ([
 	return response.Result, err
 }
 
-func (b *bot) sendMessage(ctx context.Context, chatID int64, text string, markup any) (int64, error) {
+func (b *bot) sendMessage(ctx context.Context, chatID int64, text, parseMode string, markup any) (int64, error) {
 	payload := map[string]any{"chat_id": chatID, "text": text}
+	if parseMode != "" {
+		payload["parse_mode"] = parseMode
+	}
 	if markup != nil {
 		payload["reply_markup"] = markup
 	}
@@ -570,6 +609,114 @@ func (b *bot) sendMessage(ctx context.Context, chatID int64, text string, markup
 		return 0, err
 	}
 	return response.Result.MessageID, nil
+}
+
+func markdownToTelegramHTML(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	var output []string
+	for i := 0; i < len(lines); {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
+			var code []string
+			i++
+			for i < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
+				code = append(code, lines[i])
+				i++
+			}
+			if i < len(lines) {
+				i++
+			}
+			output = append(output, "<pre>"+html.EscapeString(strings.Join(code, "\n"))+"</pre>")
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "|") {
+			end := i
+			for end < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[end]), "|") {
+				end++
+			}
+			tableLines := lines[i:end]
+			if len(tableLines) >= 2 {
+				separator := strings.Split(strings.Trim(strings.TrimSpace(tableLines[1]), "|"), "|")
+				valid := len(separator) > 0
+				for _, cell := range separator {
+					cell = strings.TrimSpace(cell)
+					cell = strings.TrimPrefix(strings.TrimSuffix(cell, ":"), ":")
+					if len(cell) < 3 || strings.Trim(cell, "-") != "" {
+						valid = false
+					}
+				}
+				if valid {
+					rows := make([][]string, 0, len(tableLines)-1)
+					widths := make([]int, 0, len(separator))
+					for rowIndex, line := range tableLines {
+						if rowIndex == 1 {
+							continue
+						}
+						cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
+						for cellIndex := range cells {
+							cells[cellIndex] = strings.TrimSpace(cells[cellIndex])
+							for len(widths) <= cellIndex {
+								widths = append(widths, 0)
+							}
+							widths[cellIndex] = max(widths[cellIndex], utf8.RuneCountInString(cells[cellIndex]))
+						}
+						rows = append(rows, cells)
+					}
+					var rendered []string
+					for _, row := range rows {
+						cells := make([]string, len(widths))
+						for cellIndex := range widths {
+							if cellIndex < len(row) {
+								cells[cellIndex] = row[cellIndex] + strings.Repeat(" ", widths[cellIndex]-utf8.RuneCountInString(row[cellIndex]))
+							} else {
+								cells[cellIndex] = strings.Repeat(" ", widths[cellIndex])
+							}
+						}
+						rendered = append(rendered, strings.TrimRight(strings.Join(cells, " | "), " "))
+					}
+					output = append(output, "<pre>"+html.EscapeString(strings.Join(rendered, "\n"))+"</pre>")
+					i = end
+					continue
+				}
+			}
+		}
+		line := lines[i]
+		trimmed := strings.TrimLeft(line, "#")
+		if len(trimmed) < len(line) && strings.HasPrefix(trimmed, " ") {
+			output = append(output, "<b>"+telegramInline(strings.TrimPrefix(trimmed, " "))+"</b>")
+		} else {
+			output = append(output, telegramInline(line))
+		}
+		i++
+	}
+	return strings.Join(output, "\n")
+}
+
+func telegramInline(text string) string {
+	escaped := html.EscapeString(text)
+	var output strings.Builder
+	for len(escaped) > 0 {
+		// Only ** and backticks convert: single * and _ are ambiguous with
+		// snake_case identifiers and PromQL arithmetic, which this domain's
+		// answers are full of — mangling those is worse than losing italics.
+		marker, tag := "", ""
+		switch {
+		case strings.HasPrefix(escaped, "**"):
+			marker, tag = "**", "b"
+		case strings.HasPrefix(escaped, "`"):
+			marker, tag = "`", "code"
+		}
+		if marker != "" {
+			if end := strings.Index(escaped[len(marker):], marker); end >= 0 {
+				end += len(marker)
+				output.WriteString("<" + tag + ">" + escaped[len(marker):end] + "</" + tag + ">")
+				escaped = escaped[end+len(marker):]
+				continue
+			}
+		}
+		output.WriteByte(escaped[0])
+		escaped = escaped[1:]
+	}
+	return output.String()
 }
 
 func (b *bot) editMessage(ctx context.Context, chatID, messageID int64, text string) error {

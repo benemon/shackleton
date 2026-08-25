@@ -22,3 +22,16 @@ export function endpointHost(value: string): string {
     return value;
   }
 }
+
+export function stripVerdictBlock(answer: string, hasVerdict: boolean): string {
+  if (!hasVerdict) return answer;
+  const start = answer.lastIndexOf('```json');
+  if (start < 0) return answer;
+  // Only a TRAILING block that looks like a verdict is plumbing; a JSON
+  // block quoted mid-answer stays (the verdict may have come from the
+  // extraction fallback instead).
+  const rest = answer.slice(start);
+  const close = rest.indexOf('```', 7);
+  if (!rest.includes('"verdict"') || (close >= 0 && rest.slice(close + 3).trim() !== '')) return answer;
+  return answer.slice(0, start);
+}

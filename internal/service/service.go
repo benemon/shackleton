@@ -377,7 +377,7 @@ func buildArticle(id, question, trigger string, verdict *store.Verdict, answer, 
 		b.WriteString("- " + payload.Name + " " + truncate(string(args), 120) + " → " + status + "\n")
 		listed++
 	}
-	b.WriteString("\n## Root cause\n" + strings.TrimSpace(stripVerdictBlock(answer)))
+	b.WriteString("\n## Root cause\n" + strings.TrimSpace(store.StripVerdictBlock(answer)))
 	b.WriteString("\n\n## Resolution\n")
 	if len(actions) == 0 {
 		b.WriteString("No remediation applied.\n")
@@ -451,14 +451,6 @@ func slugify(value string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
-}
-
-func stripVerdictBlock(answer string) string {
-	start := strings.LastIndex(answer, "```json")
-	if start < 0 || store.ParseVerdict(answer) == nil {
-		return answer
-	}
-	return answer[:start]
 }
 
 func truncate(value string, limit int) string {

@@ -83,3 +83,12 @@ test('an unterminated fence still renders its content', () => {
   const markup = renderToStaticMarkup(React.createElement(Markdown, { source: '```\ndangling' }))
   assert.match(markup, /<pre class="mono-pre">dangling<\/pre>/)
 })
+
+test('the markdown renderer turns tables into HTML tables', () => {
+  const markup = renderToStaticMarkup(React.createElement(Markdown, {
+    source: ['| Host | State |', '| --- | --- |', '| nas | healthy |'].join('\n'),
+  }))
+  assert.match(markup, /<table class="markdown-table">/)
+  assert.match(markup, /<th>Host<\/th>/)
+  assert.match(markup, /<td>healthy<\/td>/)
+})

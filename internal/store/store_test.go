@@ -255,6 +255,26 @@ func TestParseVerdict(t *testing.T) {
 	}
 }
 
+func TestStripVerdictBlock(t *testing.T) {
+	valid := "answer\n```json\n{\"verdict\":\"healthy\",\"summary\":\"ok\",\"evidence\":[]}\n```\n"
+	for _, test := range []struct {
+		name   string
+		answer string
+		want   string
+	}{
+		{name: "valid verdict", answer: valid, want: "answer\n"},
+		{name: "last valid verdict", answer: "```json\nnot json\n```\n" + valid, want: "```json\nnot json\n```\nanswer\n"},
+		{name: "invalid verdict", answer: "answer\n```json\nnot json\n```", want: "answer\n```json\nnot json\n```"},
+		{name: "no verdict", answer: "answer", want: "answer"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := StripVerdictBlock(test.answer); got != test.want {
+				t.Fatalf("StripVerdictBlock() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSummaryCarriesCompletedVerdict(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

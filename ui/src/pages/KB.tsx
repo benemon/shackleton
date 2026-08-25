@@ -37,7 +37,8 @@ function VerifiedLabel({ value }: { value?: string }) {
 
 type MarkdownBlock =
   | { kind: 'h1' | 'h2' | 'p' | 'code'; text: string }
-  | { kind: 'li'; marker: string; text: string };
+  | { kind: 'li'; marker: string; text: string }
+  | { kind: 'table'; header: string[]; rows: string[][] };
 
 function stripFrontMatter(markdown: string): string {
   const lines = markdown.split('\n');
@@ -49,7 +50,9 @@ function stripFrontMatter(markdown: string): string {
 function parseMarkdown(markdown: string): MarkdownBlock[] {
   const output: MarkdownBlock[] = [];
   let fence: string[] | null = null;
-  for (const line of markdown.split('\n')) {
+  const lines = markdown.split('\n');
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
     if (line.trim().startsWith('```')) {
       if (fence === null) fence = [];
       else {
@@ -61,6 +64,18 @@ function parseMarkdown(markdown: string): MarkdownBlock[] {
     if (fence !== null) {
       fence.push(line);
       continue;
+    }
+    if (line.trimStart().startsWith('|')) {
+      let end = index;
+      while (end < lines.length && lines[end].trimStart().startsWith('|')) end++;
+      const tableLines = lines.slice(index, end);
+      const separator = tableLines[1]?.trim().replace(/^\||\|$/g, '').split('|');
+      if (separator !== undefined && separator.every((cell) => /^:?-{3,}:?$/.test(cell.trim()))) {
+        const cells = (row: string) => row.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim());
+        output.push({ kind: 'table', header: cells(tableLines[0]), rows: tableLines.slice(2).map(cells) });
+        index = end - 1;
+        continue;
+      }
     }
     if (line.startsWith('## ')) output.push({ kind: 'h2', text: line.slice(3) });
     else if (line.startsWith('# ')) output.push({ kind: 'h1', text: line.slice(2) });
@@ -82,6 +97,18 @@ export function Markdown({ source }: { source: string }) {
         if (block.kind === 'h1') return <h1 key={index}>{block.text}</h1>;
         if (block.kind === 'h2') return <h2 key={index}>{block.text}</h2>;
         if (block.kind === 'code') return <pre className="mono-pre" key={index}>{block.text}</pre>;
+        if (block.kind === 'table') {
+          return (
+            <table className="markdown-table" key={index}>
+              <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}>{cell}</th>)}</tr></thead>
+              <tbody>
+                {block.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        }
         if (block.kind === 'li') {
           return (
             <div className="markdown-list-item" key={index}>

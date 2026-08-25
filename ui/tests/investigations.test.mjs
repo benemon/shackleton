@@ -11,6 +11,7 @@ let vite
 let Investigations
 let EventStream
 let GatedActions
+let stripVerdictBlock
 
 before(async () => {
   vite = await createServer({
@@ -21,6 +22,7 @@ before(async () => {
     ssr: { noExternal: [/@patternfly\//] },
   })
   ;({ Investigations, EventStream, GatedActions } = await vite.ssrLoadModule('/src/pages/Investigations.tsx'))
+  ;({ stripVerdictBlock } = await vite.ssrLoadModule('/src/utils.ts'))
 })
 
 after(async () => {
@@ -124,4 +126,16 @@ test('the detail header uses the title and keeps the question readable in full',
   assert.match(source, /title=\{summary\.title\}/)
   assert.match(source, /<pre className="mono-pre">\{summary\.question\}<\/pre>/)
   assert.match(source, /toggleTextCollapsed="Show the question as written"/)
+})
+
+test('the answer panel renders markdown after stripping a parsed verdict block', () => {
+  assert.match(source, /<Markdown source=\{stripVerdictBlock\(summary\.answer, summary\.verdict !== undefined\)\} \/>/)
+  const answer = '# Result\n```json\n{"verdict":"healthy"}\n```'
+  assert.equal(stripVerdictBlock(answer, true), '# Result\n')
+  assert.equal(stripVerdictBlock(answer, false), answer)
+  // A JSON block quoted mid-answer or without verdict content is prose, not plumbing.
+  const quoted = 'see:\n```json\n{"verdict":"healthy"}\n```\nmore prose after'
+  assert.equal(stripVerdictBlock(quoted, true), quoted)
+  const config = 'x\n```json\n{"replicas": 3}\n```'
+  assert.equal(stripVerdictBlock(config, true), config)
 })

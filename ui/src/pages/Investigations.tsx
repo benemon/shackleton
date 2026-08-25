@@ -21,7 +21,8 @@ import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, streamSSE, type StoredEvent, type Summary } from '../api';
 import { PageHeader, PageLoading, Panel, PanelHeader, StatusLabel, VerdictLabel } from '../components';
-import { relativeTime } from '../utils';
+import { relativeTime, stripVerdictBlock } from '../utils';
+import { Markdown } from './KB';
 
 type EventPayload = Record<string, unknown>;
 
@@ -273,7 +274,7 @@ export function InvestigationDetail() {
                     {summary.answer === undefined || summary.answer === '' ? (
                       <span className="subtle">No answer was recorded.</span>
                     ) : (
-                      summary.answer
+                      <Markdown source={stripVerdictBlock(summary.answer, summary.verdict !== undefined)} />
                     )}
                   </div>
                 </Panel>

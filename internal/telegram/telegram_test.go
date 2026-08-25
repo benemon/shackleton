@@ -28,6 +28,7 @@ type telegramRecorder struct {
 	calls         []telegramCall
 	nextMessageID int64
 	updates       []update
+	rejectHTML    bool
 }
 
 func testBot(t *testing.T) (*bot, *telegramRecorder) {
@@ -59,8 +60,13 @@ func testBot(t *testing.T) (*bot, *telegramRecorder) {
 			messageID = recorder.nextMessageID
 		}
 		recorder.calls = append(recorder.calls, telegramCall{r.URL.Path, payload, messageID})
+		rejectHTML := recorder.rejectHTML && payload["parse_mode"] == "HTML"
 		recorder.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if rejectHTML {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "description": "can't parse entities"})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"message_id": messageID}})
 	}))
 	t.Cleanup(server.Close)
@@ -165,6 +171,28 @@ func TestSendTruncatesTo3800Characters(t *testing.T) {
 	calls := recorder.matching("sendMessage")
 	if got := []rune(calls[0].payload["text"].(string)); len(got) != 3800 {
 		t.Fatalf("sent %d characters, want 3800", len(got))
+	}
+}
+
+func TestMarkdownToTelegramHTML(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		markdown string
+		want     string
+	}{
+		{name: "bold", markdown: "**ready**", want: "<b>ready</b>"},
+		{name: "snake_case survives", markdown: "run_kubectl_mutation restarted node_exporter", want: "run_kubectl_mutation restarted node_exporter"},
+		{name: "arithmetic survives", markdown: "rate(x[5m]) * 60 * 24", want: "rate(x[5m]) * 60 * 24"},
+		{name: "inline code", markdown: "run `status`", want: "run <code>status</code>"},
+		{name: "fenced block", markdown: "```go\nif a < b {\n}\n```", want: "<pre>if a &lt; b {\n}</pre>"},
+		{name: "table", markdown: "| Host | State |\n| --- | --- |\n| nas | up |", want: "<pre>Host | State\nnas  | up</pre>"},
+		{name: "literal HTML", markdown: "literal <b> & </b>", want: "literal &lt;b&gt; &amp; &lt;/b&gt;"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := markdownToTelegramHTML(test.markdown); got != test.want {
+				t.Fatalf("markdownToTelegramHTML() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -456,5 +484,53 @@ func TestEmptyTerminalAnswerSendsFallback(t *testing.T) {
 	text, _ := calls[0].payload["text"].(string)
 	if !strings.Contains(text, "inv-empty") || !strings.Contains(text, "without an answer") {
 		t.Fatalf("fallback text = %q", text)
+	}
+}
+
+func TestCompletedTerminalStripsVerdictAndAppendsSummary(t *testing.T) {
+	client, recorder := testBot(t)
+	trigger := &Trigger{bot: client}
+	verdict := &store.Verdict{Verdict: "attention", Summary: "clock is drifting"}
+	payload, err := json.Marshal(store.CompletedPayload{
+		Answer:  "# Result\n\n**drift** detected\n```json\n{\"verdict\":\"attention\",\"summary\":\"clock is drifting\",\"evidence\":[]}\n```\n",
+		Verdict: verdict,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !trigger.sendTerminal(t.Context(), 7, "inv-1", store.Event{Type: store.EventCompleted, Payload: payload}) {
+		t.Fatal("completed event not treated as terminal")
+	}
+	calls := waitForTelegramCalls(t, recorder, "sendMessage", 1)
+	text := calls[0].payload["text"].(string)
+	if strings.Contains(text, "```json") {
+		t.Fatalf("message retained verdict block: %q", text)
+	}
+	if !strings.Contains(text, "verdict: attention — clock is drifting") {
+		t.Fatalf("message omitted verdict line: %q", text)
+	}
+	if calls[0].payload["parse_mode"] != "HTML" || !strings.Contains(text, "<b>Result</b>") || !strings.Contains(text, "<b>drift</b>") {
+		t.Fatalf("formatted message = %+v", calls[0].payload)
+	}
+}
+
+func TestCompletedTerminalRetriesPlainTextAfterHTMLRejection(t *testing.T) {
+	client, recorder := testBot(t)
+	recorder.rejectHTML = true
+	trigger := &Trigger{bot: client}
+	payload, err := json.Marshal(store.CompletedPayload{Answer: "**answer**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger.sendTerminal(t.Context(), 7, "inv-1", store.Event{Type: store.EventCompleted, Payload: payload})
+	calls := waitForTelegramCalls(t, recorder, "sendMessage", 2)
+	if len(calls) != 2 {
+		t.Fatalf("sendMessage calls = %d, want 2", len(calls))
+	}
+	if calls[0].payload["parse_mode"] != "HTML" || calls[0].payload["text"] != "<b>answer</b>" {
+		t.Fatalf("first send = %+v", calls[0].payload)
+	}
+	if _, ok := calls[1].payload["parse_mode"]; ok || calls[1].payload["text"] != "**answer**" {
+		t.Fatalf("fallback send = %+v", calls[1].payload)
 	}
 }

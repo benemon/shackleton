@@ -98,6 +98,15 @@ func ParseVerdict(answer string) *Verdict {
 	return nil
 }
 
+// StripVerdictBlock removes a parsed trailing verdict block.
+func StripVerdictBlock(answer string) string {
+	start := strings.LastIndex(answer, "```json")
+	if start < 0 || ParseVerdict(answer) == nil {
+		return answer
+	}
+	return answer[:start]
+}
+
 type Event struct {
 	TS      time.Time       `json:"ts"`
 	Type    string          `json:"type"`
