@@ -259,13 +259,18 @@ func (s *Service) recordResolution(id, question, trigger string, verdict *store.
 		log.Printf("kb: read %s: %v", id, err)
 		return
 	}
-	actions := approvedActions(events)
+	actions, remediated := approvedActions(events)
 	// The KB records resolutions, never current state. Alerts and sweeps
 	// carry stable symptom identities, so a non-healthy verdict is a
 	// recurrence worth remembering; an ad-hoc question earns an article only
-	// when an approved remediation actually ran.
+	// when an approved remediation ran and succeeded — a call the executor
+	// refused or failed is a probe, not a resolution.
 	symptomatic := strings.HasPrefix(trigger, "alert:") || strings.HasPrefix(trigger, "sweep:")
-	if len(actions) == 0 && (!symptomatic || verdict == nil || verdict.Verdict == "healthy") {
+	if symptomatic {
+		if len(actions) == 0 && (verdict == nil || verdict.Verdict == "healthy") {
+			return
+		}
+	} else if !remediated {
 		return
 	}
 	article := buildArticle(id, question, trigger, verdict, answer, s.environmentText(), events, actions)
@@ -301,11 +306,10 @@ func (s *Service) environmentText() string {
 	return strings.Join(parts, "\n\n")
 }
 
-func approvedActions(events []store.Event) []kb.Action {
+func approvedActions(events []store.Event) (actions []kb.Action, remediated bool) {
 	type request struct{ name, human string }
 	requests := make(map[string]request)
 	approvedByName := make(map[string][]string)
-	var actions []kb.Action
 	for _, event := range events {
 		switch event.Type {
 		case store.EventApprovalRequested:
@@ -336,11 +340,18 @@ func approvedActions(events []store.Event) []kb.Action {
 			// the execution; correlate by arrival order.
 			if queue := approvedByName[payload.Name]; len(queue) > 0 {
 				actions = append(actions, kb.Action{Human: queue[0], Outcome: truncate(payload.ResultSnippet, 200)})
+				// The gated executors report refusals and failures in-band as
+				// text with the event's error flag unset, so the outcome
+				// prefix is the only success signal available here.
+				if !payload.Error && !strings.HasPrefix(payload.ResultSnippet, "error:") &&
+					!strings.HasPrefix(payload.ResultSnippet, "Tool error:") {
+					remediated = true
+				}
 				approvedByName[payload.Name] = queue[1:]
 			}
 		}
 	}
-	return actions
+	return actions, remediated
 }
 
 func buildArticle(id, question, trigger string, verdict *store.Verdict, answer, environment string, events []store.Event, actions []kb.Action) kb.Article {

@@ -26,7 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-type approvalSession struct{}
+type approvalSession struct{ result string }
 
 func (approvalSession) ListTools(context.Context, *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
 	return &mcp.ListToolsResult{Tools: []*mcp.Tool{{
@@ -34,8 +34,8 @@ func (approvalSession) ListTools(context.Context, *mcp.ListToolsParams) (*mcp.Li
 	}}}, nil
 }
 
-func (approvalSession) CallTool(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error) {
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "repaired"}}}, nil
+func (s approvalSession) CallTool(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s.result}}}, nil
 }
 
 func (approvalSession) Ping(context.Context, *mcp.PingParams) error { return nil }
@@ -116,10 +116,10 @@ func completedRunnerFactory(t *testing.T, answer string) RunnerFactory {
 	}
 }
 
-func approvalRunnerFactory(t *testing.T) RunnerFactory {
+func approvalRunnerFactory(t *testing.T, result string) RunnerFactory {
 	t.Helper()
 	registry, err := agent.NewRegistry(context.Background(), []agent.MCPServer{{
-		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return approvalSession{}, nil },
+		Name: "fake", Connect: func(context.Context) (agent.MCPSession, error) { return approvalSession{result}, nil },
 	}}, map[string]bool{"repair": true}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -474,7 +474,7 @@ func TestHTTPApprovalDecisionRecordsAPIVia(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := New(context.Background(), audit, testConfig(t), approvalRunnerFactory(t))
+	service := New(context.Background(), audit, testConfig(t), approvalRunnerFactory(t, "repaired"))
 	summary, err := service.CreateInvestigation(context.Background(), "repair", "api")
 	if err != nil {
 		t.Fatal(err)
@@ -1299,7 +1299,7 @@ func TestAdHocQuestionsRecordOnlyRemediations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc2 := New(context.Background(), audit2, nil, approvalRunnerFactory(t))
+	svc2 := New(context.Background(), audit2, nil, approvalRunnerFactory(t, "repaired"))
 	kbStore2, err := kb.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1326,5 +1326,35 @@ func TestAdHocQuestionsRecordOnlyRemediations(t *testing.T) {
 	}
 	if !strings.HasPrefix(articles[0].Slug, "adhoc-") {
 		t.Fatalf("slug = %q", articles[0].Slug)
+	}
+
+	// An approved call the executor refused is a probe, not a remediation.
+	audit3, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc3 := New(context.Background(), audit3, nil, approvalRunnerFactory(t, "error: command 'auth' is not allowed"))
+	kbStore3, err := kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc3.KB = kbStore3
+	if _, err := svc3.CreateInvestigation(context.Background(), "SYNTHETIC: gated-session check", "api"); err != nil {
+		t.Fatal(err)
+	}
+	pending = nil
+	for i := 0; i < 200 && len(pending) == 0; i++ {
+		pending = svc3.ListPendingApprovals()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %+v", pending)
+	}
+	if err := svc3.DecideApproval(pending[0].ID, true, "test"); err != nil {
+		t.Fatal(err)
+	}
+	svc3.Wait()
+	if articles, _ := kbStore3.List(); len(articles) != 0 {
+		t.Fatalf("refused execution became an article: %+v", articles)
 	}
 }
