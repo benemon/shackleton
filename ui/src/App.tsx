@@ -23,7 +23,7 @@ import {
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { api, clearToken, session, setToken, type ConfigView, type Health } from './api';
 import { Panel } from './components';
-import { AdminChannels, AdminMetrics, AdminPlatform, AdminSweeps, AdminTools } from './pages/Admin';
+import { AdminChannels, AdminKnowledge, AdminMetrics, AdminPlatform, AdminSweeps, AdminTools } from './pages/Admin';
 import { Approvals } from './pages/Approvals';
 import { InvestigationDetail, Investigations } from './pages/Investigations';
 import { Inventory } from './pages/Inventory';
@@ -85,6 +85,7 @@ const administrationNavigation: NavEntry[] = [
   { path: '/admin/platform', label: 'Platform' },
   { path: '/admin/tools', label: 'Tool servers' },
   { path: '/admin/metrics', label: 'Metrics sources' },
+  { path: '/admin/knowledge', label: 'Knowledge sources' },
   { path: '/admin/channels', label: 'Channels' },
   { path: '/admin/sweeps', label: 'Sweeps' },
 ];
@@ -185,6 +186,7 @@ export function Console() {
           <Route path="/admin/platform" element={<AdminPlatform />} />
           <Route path="/admin/tools" element={<AdminTools />} />
           <Route path="/admin/metrics" element={<AdminMetrics />} />
+          <Route path="/admin/knowledge" element={<AdminKnowledge />} />
           <Route path="/admin/channels" element={<AdminChannels />} />
           <Route path="/admin/sweeps" element={<AdminSweeps />} />
           <Route path="*" element={<Navigate to="/" replace />} />

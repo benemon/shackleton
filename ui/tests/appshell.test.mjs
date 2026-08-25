@@ -61,21 +61,21 @@ test('sign-out deletes the session before dropping the in-memory token', () => {
 // The exact shipped navigation. A slice that adds or renames a nav entry
 // plans this fixture update in (Dufflebag smoke convention).
 const primaryLabels = ['Overview', 'Investigations', 'Approvals', 'Knowledge base', 'Inventory']
-const administrationLabels = ['Platform', 'Tool servers', 'Metrics sources', 'Channels', 'Sweeps']
+const administrationLabels = ['Platform', 'Tool servers', 'Metrics sources', 'Knowledge sources', 'Channels', 'Sweeps']
 
 test('the console renders the exact nav item list', () => {
   const markup = render(React.createElement(Console))
   for (const label of [...primaryLabels, ...administrationLabels, 'Administration']) {
     assert.match(markup, new RegExp(`>${label}<`), label)
   }
-  // 10 entries plus the Administration expandable itself.
-  assert.equal((markup.match(/class="pf-v6-c-nav__item[ "]/g) ?? []).length, 11)
+  // 11 entries plus the Administration expandable itself.
+  assert.equal((markup.match(/class="pf-v6-c-nav__item[ "]/g) ?? []).length, 12)
 
   for (const [label, path] of [
     ['Overview', '/'], ['Investigations', '/investigations'], ['Approvals', '/approvals'],
     ['Knowledge base', '/kb'], ['Inventory', '/inventory'],
     ['Platform', '/admin/platform'], ['Tool servers', '/admin/tools'], ['Metrics sources', '/admin/metrics'],
-    ['Channels', '/admin/channels'], ['Sweeps', '/admin/sweeps'],
+    ['Knowledge sources', '/admin/knowledge'], ['Channels', '/admin/channels'], ['Sweeps', '/admin/sweeps'],
   ]) {
     assert.ok(shellSource.includes(`path: '${path}', label: '${label}'`), `${path} → ${label}`)
   }

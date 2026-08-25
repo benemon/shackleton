@@ -20,6 +20,7 @@ const blurbs = {
     'The daemon itself: where it listens, what it stores, which model it reasons with, and how long it is allowed to think.',
   tools: 'Configured MCP endpoints and the tools that require an operator decision.',
   metrics: 'The metrics and logs endpoints available to investigations.',
+  knowledge: 'The vendor documentation and knowledge-base services an investigation may consult, and the search backend behind them.',
   channels: 'Where the daemon speaks, and where an approval can be settled from outside this console.',
   sweeps: 'Scheduled questions. Read each question in full when reviewing the verdicts it produces.',
 };
@@ -284,35 +285,45 @@ export function AdminMetrics() {
               </Table>
             )}
           </section>
-          <section className="flush-table">
-            <PanelHeader>Knowledge sources</PanelHeader>
-            {config.knowledge_sources.length === 0 ? (
-              <div className="panel__body">No knowledge sources configured.</div>
-            ) : (
-              <Table variant="compact" aria-label="Knowledge sources">
-                <Thead><Tr><Th>Name</Th><Th>Type</Th><Th>Sites</Th><Th>Auth</Th></Tr></Thead>
-                <Tbody>
-                  {config.knowledge_sources.map((source) => (
-                    <Tr key={source.name}>
-                      <Td dataLabel="Name"><span className="mono">{source.name}</span></Td>
-                      <Td dataLabel="Type"><Label color="blue" isCompact>{source.type}</Label></Td>
-                      <Td dataLabel="Sites">
-                        <span className="mono mono--small">{(source.sites ?? []).join(', ') || '—'}</span>
-                      </Td>
-                      <Td dataLabel="Auth"><SecretRefView secret={source.auth} /></Td>
-                    </Tr>
-                  ))}
-                </Tbody>
-              </Table>
-            )}
-            {config.knowledge_search !== undefined && (
-              <div className="panel__body subtle">
-                Search backend: {config.knowledge_search.type} ·{' '}
-                <span className="mono mono--small">{config.knowledge_search.url}</span>
-              </div>
-            )}
-          </section>
         </>
+      )}
+    </AdminState>
+  );
+}
+
+export function AdminKnowledge() {
+  const { config, error } = useConfig();
+  return (
+    <AdminState title="Knowledge sources" blurb={blurbs.knowledge} error={error} loading={config === null}>
+      {config !== null && (
+        <section className="flush-table">
+          <PanelHeader>Knowledge sources</PanelHeader>
+          {config.knowledge_sources.length === 0 ? (
+            <div className="panel__body">No knowledge sources configured.</div>
+          ) : (
+            <Table variant="compact" aria-label="Knowledge sources">
+              <Thead><Tr><Th>Name</Th><Th>Type</Th><Th>Sites</Th><Th>Auth</Th></Tr></Thead>
+              <Tbody>
+                {config.knowledge_sources.map((source) => (
+                  <Tr key={source.name}>
+                    <Td dataLabel="Name"><span className="mono">{source.name}</span></Td>
+                    <Td dataLabel="Type"><Label color="blue" isCompact>{source.type}</Label></Td>
+                    <Td dataLabel="Sites">
+                      <span className="mono mono--small">{(source.sites ?? []).join(', ') || '—'}</span>
+                    </Td>
+                    <Td dataLabel="Auth"><SecretRefView secret={source.auth} /></Td>
+                  </Tr>
+                ))}
+              </Tbody>
+            </Table>
+          )}
+          {config.knowledge_search !== undefined && (
+            <div className="panel__body subtle">
+              Search backend: {config.knowledge_search.type} ·{' '}
+              <span className="mono mono--small">{config.knowledge_search.url}</span>
+            </div>
+          )}
+        </section>
       )}
     </AdminState>
   );

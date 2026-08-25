@@ -32,6 +32,7 @@ test('each admin page loads with its own header, blurb, and the read-only note',
     ['AdminPlatform', 'Platform'],
     ['AdminTools', 'Tool servers'],
     ['AdminMetrics', 'Metrics sources'],
+    ['AdminKnowledge', 'Knowledge sources'],
     ['AdminChannels', 'Channels'],
     ['AdminSweeps', 'Sweeps'],
   ]) {
