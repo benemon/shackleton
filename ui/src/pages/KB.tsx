@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Alert, Button, EmptyState, EmptyStateBody, Label, SearchInput, ToggleGroup, ToggleGroupItem } from '@patternfly/react-core';
 import { CheckCircleIcon } from '@patternfly/react-icons';
 import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
@@ -36,9 +36,17 @@ function VerifiedLabel({ value }: { value?: string }) {
 }
 
 type MarkdownBlock =
-  | { kind: 'h1' | 'h2' | 'p' | 'code'; text: string }
+  | { kind: 'h1' | 'h2' | 'h3' | 'p' | 'code'; text: string }
   | { kind: 'li'; marker: string; text: string }
   | { kind: 'table'; header: string[]; rows: string[][] };
+
+function inline(text: string): ReactNode[] {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/).map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) return <b key={index}>{part.slice(2, -2)}</b>;
+    if (part.startsWith('`') && part.endsWith('`')) return <code className="mono mono--small" key={index}>{part.slice(1, -1)}</code>;
+    return part;
+  });
+}
 
 function stripFrontMatter(markdown: string): string {
   const lines = markdown.split('\n');
@@ -77,9 +85,11 @@ function parseMarkdown(markdown: string): MarkdownBlock[] {
         continue;
       }
     }
-    if (line.startsWith('## ')) output.push({ kind: 'h2', text: line.slice(3) });
-    else if (line.startsWith('# ')) output.push({ kind: 'h1', text: line.slice(2) });
-    else {
+    const heading = line.match(/^(#{1,6}) (.*)$/);
+    if (heading !== null) {
+      const kind = heading[1].length === 1 ? 'h1' : heading[1].length === 2 ? 'h2' : 'h3';
+      output.push({ kind, text: heading[2] });
+    } else {
       const ordered = line.match(/^(\d+)\.\s+(.*)$/);
       if (ordered !== null) output.push({ kind: 'li', marker: `${ordered[1]}.`, text: ordered[2] });
       else if (line.startsWith('- ')) output.push({ kind: 'li', marker: '—', text: line.slice(2) });
@@ -94,8 +104,9 @@ export function Markdown({ source }: { source: string }) {
   return (
     <>
       {parseMarkdown(stripFrontMatter(source)).map((block, index) => {
-        if (block.kind === 'h1') return <h1 key={index}>{block.text}</h1>;
-        if (block.kind === 'h2') return <h2 key={index}>{block.text}</h2>;
+        if (block.kind === 'h1') return <h1 key={index}>{inline(block.text)}</h1>;
+        if (block.kind === 'h2') return <h2 key={index}>{inline(block.text)}</h2>;
+        if (block.kind === 'h3') return <h3 key={index}>{inline(block.text)}</h3>;
         if (block.kind === 'code') return <pre className="mono-pre" key={index}>{block.text}</pre>;
         if (block.kind === 'table') {
           return (
@@ -113,11 +124,11 @@ export function Markdown({ source }: { source: string }) {
           return (
             <div className="markdown-list-item" key={index}>
               <span className="mono">{block.marker}</span>
-              <span>{block.text}</span>
+              <span>{inline(block.text)}</span>
             </div>
           );
         }
-        return <p key={index}>{block.text}</p>;
+        return <p key={index}>{inline(block.text)}</p>;
       })}
     </>
   );

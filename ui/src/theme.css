@@ -438,6 +438,18 @@ body {
   margin: 8px 0;
 }
 
+.markdown-table {
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+.markdown-table th,
+.markdown-table td {
+  border: 1px solid var(--pf-t--global--border--color--200);
+  padding: 4px 10px;
+  text-align: left;
+}
+
 .inert-panel {
   color: var(--pf-t--global--text--color--subtle);
 }

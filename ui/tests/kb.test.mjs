@@ -84,6 +84,16 @@ test('an unterminated fence still renders its content', () => {
   assert.match(markup, /<pre class="mono-pre">dangling<\/pre>/)
 })
 
+test('deep headings and inline spans render instead of literal markers', () => {
+  const markup = renderToStaticMarkup(React.createElement(Markdown, {
+    source: ['### Option 1', '**Update all Operators** via `oc adm upgrade` first.'].join('\n'),
+  }))
+  assert.match(markup, /<h3>Option 1<\/h3>/)
+  assert.match(markup, /<b>Update all Operators<\/b>/)
+  assert.match(markup, /<code class="mono mono--small">oc adm upgrade<\/code>/)
+  assert.doesNotMatch(markup, /\*\*/)
+})
+
 test('the markdown renderer turns tables into HTML tables', () => {
   const markup = renderToStaticMarkup(React.createElement(Markdown, {
     source: ['| Host | State |', '| --- | --- |', '| nas | healthy |'].join('\n'),
