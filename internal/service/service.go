@@ -25,6 +25,14 @@ import (
 var (
 	ErrApprovalNotFound       = errors.New("approval not found")
 	ErrApprovalAlreadyDecided = errors.New("approval already decided")
+	// ErrInvestigationNotFound reports an unknown investigation id.
+	ErrInvestigationNotFound = errors.New("investigation not found")
+	// ErrNotCurateable reports an investigation that cannot become an article.
+	ErrNotCurateable = errors.New("investigation is not completed with an answer")
+	// ErrArticleExists reports a conflicting knowledge-base slug.
+	ErrArticleExists = errors.New("article exists")
+	// ErrKBUnavailable reports that no knowledge-base store is configured.
+	ErrKBUnavailable = errors.New("knowledge base is not configured")
 )
 
 type RunnerFactory func(events agent.EventSink, approver agent.Approver) *agent.Runner
@@ -586,6 +594,70 @@ func (s *Service) GetInvestigation(id string) (store.Summary, []store.Event, err
 		return store.Summary{}, nil, fs.ErrNotExist
 	}
 	return summary, events, nil
+}
+
+// SaveInvestigationToKB saves a completed investigation answer as a draft article.
+func (s *Service) SaveInvestigationToKB(id string) (string, error) {
+	if _, err := s.store.Get(id); err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, store.ErrInvalidID) {
+			return "", ErrInvestigationNotFound
+		}
+		return "", err
+	}
+	summary := s.summary(id)
+	if summary.ID == "" {
+		return "", ErrInvestigationNotFound
+	}
+	if summary.Status != "completed" || strings.TrimSpace(summary.Answer) == "" {
+		return "", ErrNotCurateable
+	}
+	if s.KB == nil {
+		return "", ErrKBUnavailable
+	}
+
+	headline, _, _ := strings.Cut(summary.Question, "\n")
+	title := truncate(headline, 80)
+	slug := strings.TrimRight(slugify(truncate(headline, 60)), "-")
+	if _, err := s.KB.Get(slug); err == nil {
+		return "", ErrArticleExists
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+
+	var body strings.Builder
+	body.WriteString("# " + title + "\n")
+	if environment := s.environmentSummary(); environment != "" {
+		body.WriteString("\n## Environment\n" + environment + "\n")
+	}
+	body.WriteString("\n## Issue\n" + headline + "\n")
+	body.WriteString("\n## Diagnosis\nInvestigation " + id + ":\n")
+	if summary.Verdict == nil || len(summary.Verdict.Evidence) == 0 {
+		body.WriteString("No structured evidence was recorded.\n")
+	} else {
+		for _, item := range summary.Verdict.Evidence {
+			body.WriteString("- " + item + "\n")
+		}
+	}
+	body.WriteString("\n## Root cause\n")
+	if summary.Verdict == nil || strings.TrimSpace(summary.Verdict.Summary) == "" {
+		body.WriteString("Not established.\n")
+	} else {
+		body.WriteString(strings.TrimSpace(summary.Verdict.Summary) + "\n")
+	}
+	body.WriteString("\n## Resolution\n" + store.StripVerdictBlock(summary.Answer))
+
+	front := kb.FrontMatter{
+		Slug: slug, Title: title, Symptom: kb.Symptom{Trigger: summary.Trigger},
+		Occurrences: []kb.Occurrence{{Investigation: id, At: time.Now().UTC()}},
+		Resolution:  kb.Resolution{Actions: []kb.Action{}, Verified: "none"},
+	}
+	if summary.Verdict != nil {
+		front.Verdict = summary.Verdict.Verdict
+	}
+	if _, err := s.KB.Record(kb.Article{FrontMatter: front, Body: body.String()}); err != nil {
+		return "", err
+	}
+	return slug, nil
 }
 
 func (s *Service) ListInvestigations() []store.Summary {

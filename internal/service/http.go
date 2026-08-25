@@ -33,6 +33,7 @@ func NewHTTP(service *Service, token string) http.Handler {
 	mux.HandleFunc("GET /v1/investigations", service.listInvestigations)
 	mux.HandleFunc("GET /v1/investigations/{id}", service.getInvestigation)
 	mux.HandleFunc("GET /v1/investigations/{id}/events", service.followInvestigation)
+	mux.HandleFunc("POST /v1/investigations/{id}/kb", service.saveInvestigationToKB)
 	mux.HandleFunc("POST /v1/alerts", service.ingestAlerts)
 	mux.HandleFunc("GET /v1/approvals", service.listApprovals)
 	mux.HandleFunc("GET /v1/approvals/events", service.followApprovals)
@@ -153,6 +154,24 @@ func (s *Service) getInvestigation(w http.ResponseWriter, r *http.Request) {
 		Summary store.Summary `json:"summary"`
 		Events  []store.Event `json:"events"`
 	}{summary, events})
+}
+
+func (s *Service) saveInvestigationToKB(w http.ResponseWriter, r *http.Request) {
+	slug, err := s.SaveInvestigationToKB(r.PathValue("id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvestigationNotFound):
+			writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrNotCurateable), errors.Is(err, ErrArticleExists):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, struct {
+		Slug string `json:"slug"`
+	}{slug})
 }
 
 func (s *Service) followInvestigation(w http.ResponseWriter, r *http.Request) {

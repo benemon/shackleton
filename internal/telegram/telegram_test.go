@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/benemon/shackleton/internal/agent"
+	"github.com/benemon/shackleton/internal/kb"
 	"github.com/benemon/shackleton/internal/service"
 	"github.com/benemon/shackleton/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -532,5 +533,93 @@ func TestCompletedTerminalRetriesPlainTextAfterHTMLRejection(t *testing.T) {
 	}
 	if _, ok := calls[1].payload["parse_mode"]; ok || calls[1].payload["text"] != "**answer**" {
 		t.Fatalf("fallback send = %+v", calls[1].payload)
+	}
+	trigger.mu.Lock()
+	mapped := trigger.answers[calls[1].messageID]
+	_, rejectedMapped := trigger.answers[calls[0].messageID]
+	trigger.mu.Unlock()
+	if mapped != "inv-1" || rejectedMapped {
+		t.Fatalf("answer mappings = %+v", trigger.answers)
+	}
+}
+
+func TestTriggerReplySavesKnownAnswerToKB(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(t.Context(), audit, nil, completedFactory(t, "Restart it."))
+	svc.KB, err = kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := svc.CreateInvestigation(t.Context(), "Repair exporter", "telegram")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	_, events, err := svc.GetInvestigation(summary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger, recorder, ctx := testTrigger(t, svc)
+	if !trigger.sendTerminal(ctx, 7, summary.ID, events[len(events)-1]) {
+		t.Fatal("completed event not treated as terminal")
+	}
+	answer := waitForTelegramCalls(t, recorder, "sendMessage", 1)[0]
+	reply := message{Text: "Make this a knowledgebase article", ReplyTo: &message{MessageID: answer.messageID}, Chat: chat{ID: 7}, From: user{ID: 7}}
+	trigger.handleMessage(ctx, reply)
+	calls := waitForTelegramCalls(t, recorder, "sendMessage", 2)
+	if calls[1].payload["text"] != "Saved as draft article repair-exporter -- review and approve it in the console." {
+		t.Fatalf("confirmation = %q", calls[1].payload["text"])
+	}
+	articles, err := svc.KB.List()
+	if err != nil || len(articles) != 1 || articles[0].Slug != "repair-exporter" {
+		t.Fatalf("articles = %+v, %v", articles, err)
+	}
+	if got := len(svc.ListInvestigations()); got != 1 {
+		t.Fatalf("save reply created %d investigations", got)
+	}
+}
+
+func TestTriggerNonSaveAndUnknownRepliesCreateInvestigations(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(t.Context(), audit, nil, completedFactory(t, "answer"))
+	client, _ := testBot(t)
+	trigger := &Trigger{bot: client, service: svc, chats: map[int64]*chatRole{7: {qa: true}}, answers: map[int64]string{42: "known"}}
+	trigger.handleMessage(t.Context(), message{Text: "What about logs?", ReplyTo: &message{MessageID: 42}, Chat: chat{ID: 7}, From: user{ID: 7}})
+	// Bare "kb" stays a follow-up question even on a known answer.
+	trigger.handleMessage(t.Context(), message{Text: "check the redhat kb for this", ReplyTo: &message{MessageID: 42}, Chat: chat{ID: 7}, From: user{ID: 7}})
+	trigger.handleMessage(t.Context(), message{Text: "save this", ReplyTo: &message{MessageID: 99}, Chat: chat{ID: 7}, From: user{ID: 7}})
+	svc.Wait()
+	investigations := svc.ListInvestigations()
+	if len(investigations) != 3 {
+		t.Fatalf("investigations = %+v", investigations)
+	}
+	questions := map[string]bool{}
+	for _, investigation := range investigations {
+		questions[investigation.Question] = true
+	}
+	if !questions["What about logs?"] || !questions["check the redhat kb for this"] || !questions["save this"] {
+		t.Fatalf("questions = %+v", questions)
+	}
+}
+
+func TestTriggerAnswerMappingIsBounded(t *testing.T) {
+	trigger := &Trigger{}
+	for i := int64(1); i <= answerCap+1; i++ {
+		trigger.rememberAnswer(i, "investigation")
+	}
+	if len(trigger.answers) != answerCap || len(trigger.answerOrder) != answerCap {
+		t.Fatalf("mapping sizes = %d, %d", len(trigger.answers), len(trigger.answerOrder))
+	}
+	if _, ok := trigger.answers[1]; ok {
+		t.Fatal("oldest answer mapping was not evicted")
+	}
+	if trigger.answers[answerCap+1] != "investigation" {
+		t.Fatal("newest answer mapping was not retained")
 	}
 }

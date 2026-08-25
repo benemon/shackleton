@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -251,15 +252,17 @@ type postedApproval struct {
 }
 
 type Trigger struct {
-	bot      *bot
-	service  *service.Service
-	chats    map[int64]*chatRole
-	mu       sync.Mutex
-	messages map[string][]postedApproval
+	bot         *bot
+	service     *service.Service
+	chats       map[int64]*chatRole
+	mu          sync.Mutex
+	messages    map[string][]postedApproval
+	answers     map[int64]string
+	answerOrder []int64
 }
 
 func newTrigger(ctx context.Context, client *bot, chats map[int64]*chatRole, svc *service.Service) *Trigger {
-	t := &Trigger{bot: client, service: svc, chats: chats, messages: make(map[string][]postedApproval)}
+	t := &Trigger{bot: client, service: svc, chats: chats, messages: make(map[string][]postedApproval), answers: make(map[int64]string)}
 	if len(t.approvalChats()) > 0 {
 		events, cancel := svc.SubscribeApprovals()
 		go func() {
@@ -323,6 +326,24 @@ func (t *Trigger) handleMessage(ctx context.Context, message message) {
 	}
 	if strings.TrimSpace(message.Text) == "" || strings.HasPrefix(message.Text, "/") {
 		return
+	}
+	if message.ReplyTo != nil && saveIntent.MatchString(message.Text) {
+		t.mu.Lock()
+		id, known := t.answers[message.ReplyTo.MessageID]
+		t.mu.Unlock()
+		if known {
+			slug, err := t.service.SaveInvestigationToKB(id)
+			text := ""
+			if err != nil {
+				text = err.Error()
+			} else {
+				text = "Saved as draft article " + slug + " -- review and approve it in the console."
+			}
+			if _, err := t.bot.sendMessage(ctx, message.Chat.ID, text, "", nil); err != nil {
+				log.Printf("telegram send knowledge-base result: %v", err)
+			}
+			return
+		}
 	}
 	summary, err := t.service.CreateInvestigation(ctx, message.Text, "telegram")
 	if err != nil {
@@ -412,17 +433,46 @@ func (t *Trigger) sendTerminal(ctx context.Context, chatID int64, id string, eve
 	if parseMode == "" {
 		formatted = truncate(text, 3800)
 	}
-	if _, err := t.bot.sendMessage(ctx, chatID, formatted, parseMode, nil); err != nil {
-		if parseMode != "" {
-			if _, retryErr := t.bot.sendMessage(ctx, chatID, text, "", nil); retryErr == nil {
-				return true
-			} else {
-				log.Printf("telegram send investigation result retry: %v", retryErr)
-			}
+	messageID, err := t.bot.sendMessage(ctx, chatID, formatted, parseMode, nil)
+	if err == nil {
+		if event.Type == store.EventCompleted {
+			t.rememberAnswer(messageID, id)
 		}
-		log.Printf("telegram send investigation result: %v", err)
+		return true
 	}
+	if parseMode != "" {
+		if retryMessageID, retryErr := t.bot.sendMessage(ctx, chatID, text, "", nil); retryErr == nil {
+			if event.Type == store.EventCompleted {
+				t.rememberAnswer(retryMessageID, id)
+			}
+			return true
+		} else {
+			log.Printf("telegram send investigation result retry: %v", retryErr)
+		}
+	}
+	log.Printf("telegram send investigation result: %v", err)
 	return true
+}
+
+// saveIntent matches natural save phrasings ("save", "make this a
+// knowledgebase article") inside a reply; bare "kb" and "article" stay
+// unclaimed because follow-up questions use them constantly.
+var saveIntent = regexp.MustCompile(`(?i)\b(save|knowledge[ -]?base)\b`)
+
+const answerCap = 256
+
+func (t *Trigger) rememberAnswer(messageID int64, investigationID string) {
+	t.mu.Lock()
+	if t.answers == nil {
+		t.answers = make(map[int64]string)
+	}
+	t.answers[messageID] = investigationID
+	t.answerOrder = append(t.answerOrder, messageID)
+	if len(t.answerOrder) > answerCap {
+		delete(t.answers, t.answerOrder[0])
+		t.answerOrder = t.answerOrder[1:]
+	}
+	t.mu.Unlock()
 }
 
 func (t *Trigger) followApprovals(ctx context.Context, events <-chan service.ApprovalEvent) {
@@ -539,10 +589,11 @@ type update struct {
 }
 
 type message struct {
-	MessageID int64  `json:"message_id"`
-	Text      string `json:"text"`
-	From      user   `json:"from"`
-	Chat      chat   `json:"chat"`
+	MessageID int64    `json:"message_id"`
+	Text      string   `json:"text"`
+	From      user     `json:"from"`
+	Chat      chat     `json:"chat"`
+	ReplyTo   *message `json:"reply_to_message"`
 }
 
 type callbackQuery struct {

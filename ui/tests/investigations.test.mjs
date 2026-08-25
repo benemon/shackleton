@@ -139,3 +139,10 @@ test('the answer panel renders markdown after stripping a parsed verdict block',
   const config = 'x\n```json\n{"replicas": 3}\n```'
   assert.equal(stripVerdictBlock(config, true), config)
 })
+
+test('the KB save action is gated to completed investigations with answers', () => {
+  assert.match(source, /summary\.status === 'completed' && summary\.answer !== undefined && summary\.answer\.trim\(\) !== ''/)
+  assert.match(source, />\s*Save as KB article\s*</)
+  assert.match(source, /api\.saveInvestigationToKB\(summary\.id\)/)
+  assert.match(source, /<Link to=\{`\/kb\/\$\{kbSlug\}`\}>\{kbSlug\}<\/Link>/)
+})

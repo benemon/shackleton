@@ -136,6 +136,8 @@ export function InvestigationDetail() {
   const [events, setEvents] = useState<StoredEvent[]>([]);
   const [drawerOverride, setDrawerOverride] = useState<boolean | null>(null);
   const [error, setError] = useState('');
+  const [kbSlug, setKBSlug] = useState('');
+  const [kbError, setKBError] = useState('');
 
   useEffect(() => {
     const abort = new AbortController();
@@ -143,6 +145,8 @@ export function InvestigationDetail() {
     setEvents([]);
     setDrawerOverride(null);
     setError('');
+    setKBSlug('');
+    setKBError('');
     api.getInvestigation(id).then(
       (investigation) => {
         setSummary(investigation.summary);
@@ -208,7 +212,32 @@ export function InvestigationDetail() {
                   <Button variant="link" isInline onClick={() => setDrawerOverride(!drawerOpen)}>
                     {drawerOpen ? 'Hide event stream' : 'Show event stream'}
                   </Button>
+                  {summary.status === 'completed' && summary.answer !== undefined && summary.answer.trim() !== '' && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setKBSlug('');
+                        setKBError('');
+                        api.saveInvestigationToKB(summary.id).then(
+                          ({ slug }) => setKBSlug(slug),
+                          (reason) => setKBError(String(reason)),
+                        );
+                      }}
+                    >
+                      Save as KB article
+                    </Button>
+                  )}
                 </div>
+                {kbSlug !== '' && (
+                  <Alert variant="success" title="Draft article saved">
+                    Review <Link to={`/kb/${kbSlug}`}>{kbSlug}</Link> and approve it when ready.
+                  </Alert>
+                )}
+                {kbError !== '' && (
+                  <Alert variant="danger" title="Could not save the draft article">
+                    {kbError}
+                  </Alert>
+                )}
 
                 <Panel>
                   <div className="panel__body">

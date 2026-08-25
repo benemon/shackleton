@@ -3,6 +3,7 @@ import type { components } from './generated/api';
 export type Summary = components['schemas']['Summary'];
 export type StoredEvent = components['schemas']['Event'];
 export type Investigation = components['schemas']['Investigation'];
+export type SaveInvestigationToKBResponse = components['schemas']['SaveInvestigationToKBResponse'];
 export type PendingApproval = components['schemas']['PendingApproval'];
 export type ApprovalEvent = components['schemas']['ApprovalEvent'];
 export type ConfigView = components['schemas']['ConfigView'];
@@ -72,6 +73,10 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
+    }),
+  saveInvestigationToKB: (id: string) =>
+    request<SaveInvestigationToKBResponse>(`/v1/investigations/${encodeURIComponent(id)}/kb`, {
+      method: 'POST',
     }),
   listApprovals: () => request<PendingApproval[]>('/v1/approvals'),
   decideApproval: (id: string, approved: boolean) =>

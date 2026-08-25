@@ -612,6 +612,45 @@ func TestHTTPCreateGetListRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHTTPSaveInvestigationToKB(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(context.Background(), audit, testConfig(t), completedRunnerFactory(t, "procedure"))
+	service.KB, err = kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreateInvestigation(context.Background(), "Repair the stuck CSV", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Wait()
+	handler := NewHTTP(service, "token")
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/investigations/"+created.ID+"/kb", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || response.Body.String() != "{\"slug\":\"repair-the-stuck-csv\"}\n" {
+		t.Fatalf("save status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("repeat status = %d, body = %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodPost, "/v1/investigations/missing/kb", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestDisplayTitle(t *testing.T) {
 	long := strings.Repeat("x", 100)
 	for _, tc := range []struct {
@@ -1150,6 +1189,75 @@ func TestResolutionRecordedToKB(t *testing.T) {
 	svc2.Wait()
 	if articles, _ := kbStore2.List(); len(articles) != 0 {
 		t.Fatalf("verdict-only investigation created an article: %+v", articles)
+	}
+}
+
+func TestSaveInvestigationToKB(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := "Restart the exporter.\n\nThen verify metrics.\n```json\n{\"verdict\":\"action\",\"summary\":\"the exporter was stuck\",\"evidence\":[\"scrape target timed out\"]}\n```\n"
+	svc := New(context.Background(), audit, nil, completedRunnerFactory(t, answer))
+	kbStore, err := kb.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.KB = kbStore
+	summary, err := svc.CreateInvestigation(context.Background(), "How do I repair the stuck exporter?\nInclude verification.", "telegram")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+
+	slug, err := svc.SaveInvestigationToKB(summary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug != "how-do-i-repair-the-stuck-exporter" {
+		t.Fatalf("slug = %q", slug)
+	}
+	articles, err := kbStore.List()
+	if err != nil || len(articles) != 1 {
+		t.Fatalf("articles = %+v, %v", articles, err)
+	}
+	front := articles[0]
+	if front.Status != "draft" || front.Title != "How do I repair the stuck exporter?" || front.Symptom.Trigger != "telegram" || front.Verdict != "action" ||
+		len(front.Occurrences) != 1 || front.Occurrences[0].Investigation != summary.ID {
+		t.Fatalf("front-matter = %+v", front)
+	}
+	raw, err := kbStore.Get(slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(raw)
+	for _, want := range []string{
+		"# How do I repair the stuck exporter?",
+		"## Issue\nHow do I repair the stuck exporter?",
+		"## Diagnosis\nInvestigation " + summary.ID + ":\n- scrape target timed out",
+		"## Root cause\nthe exporter was stuck",
+		"## Resolution\nRestart the exporter.\n\nThen verify metrics.",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("article missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "```json") {
+		t.Fatalf("article retained verdict block:\n%s", content)
+	}
+	if _, err := svc.SaveInvestigationToKB(summary.ID); !errors.Is(err, ErrArticleExists) {
+		t.Fatalf("second save error = %v", err)
+	}
+	if _, err := svc.SaveInvestigationToKB("missing"); !errors.Is(err, ErrInvestigationNotFound) {
+		t.Fatalf("missing save error = %v", err)
+	}
+	running, err := audit.Begin("Still investigating", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	if _, err := svc.SaveInvestigationToKB(running.ID); !errors.Is(err, ErrNotCurateable) {
+		t.Fatalf("running save error = %v", err)
 	}
 }
 

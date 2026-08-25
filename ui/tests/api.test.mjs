@@ -56,6 +56,19 @@ test('requests carry the in-memory token as a bearer header', async () => {
   assert.equal(seen.headers.Authorization, 'Bearer secret')
 })
 
+test('saving an investigation posts to its encoded KB route', async () => {
+  setToken('secret')
+  let seen
+  globalThis.fetch = async (path, init) => {
+    seen = { path, init }
+    return jsonResponse(201, { slug: 'draft' })
+  }
+  assert.deepEqual(await api.saveInvestigationToKB('id/with slash'), { slug: 'draft' })
+  assert.equal(seen.path, '/v1/investigations/id%2Fwith%20slash/kb')
+  assert.equal(seen.init.method, 'POST')
+  assert.equal(seen.init.headers.Authorization, 'Bearer secret')
+})
+
 test('a 401 drops the in-memory token and reloads back to the boot exchange', async () => {
   setToken('stale')
   globalThis.fetch = async () => jsonResponse(401, { error: 'unauthorized' })

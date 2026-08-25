@@ -78,6 +78,26 @@ paths:
           $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
+  /v1/investigations/{id}/kb:
+    parameters:
+      - $ref: '#/components/parameters/InvestigationID'
+    post:
+      operationId: saveInvestigationToKB
+      responses:
+        '201':
+          description: Draft article created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaveInvestigationToKBResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /v1/alerts:
     post:
       operationId: ingestAlerts
@@ -336,7 +356,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     Conflict:
-      description: Approval already decided
+      description: Resource state conflicts with the operation
       content:
         application/json:
           schema:
@@ -360,6 +380,13 @@ components:
         trigger:
           type: string
           default: api
+    SaveInvestigationToKBResponse:
+      type: object
+      additionalProperties: false
+      required: [slug]
+      properties:
+        slug:
+          type: string
     ApprovalDecision:
       type: object
       additionalProperties: false
