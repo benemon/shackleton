@@ -83,6 +83,10 @@ func TestSystemPrompt(t *testing.T) {
 		!strings.Contains(got, "otherwise state plainly that it comes from general knowledge and is unverified") {
 		t.Errorf("grounding sentence missing: %q", got)
 	}
+	if !strings.Contains(got, "read its current state first") ||
+		!strings.Contains(got, "anchored to the versions and names you observed, never a generic example") {
+		t.Errorf("estate-anchoring sentence missing: %q", got)
+	}
 	if !strings.Contains(got, "Never include estate hostnames or identifiers in documentation search queries.") {
 		t.Errorf("query-privacy sentence missing: %q", got)
 	}

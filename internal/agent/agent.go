@@ -35,6 +35,7 @@ func SystemPrompt(preamble, environment string, metricsTools, logsTools, knowled
 	if len(knowledgeTools) > 0 {
 		b.WriteString(" Use " + strings.Join(knowledgeTools, ", ") + " to consult vendor documentation and knowledge bases.")
 		b.WriteString(" A procedural recommendation — an upgrade path, a command to run, how a system behaves — must be grounded in what you read this investigation from the estate, the knowledge base, or a documentation lookup; otherwise state plainly that it comes from general knowledge and is unverified.")
+		b.WriteString(" When a question concerns this estate — the cluster, a named host, anything inventoried — read its current state first; documentation supplies the general procedure, but the answer must be anchored to the versions and names you observed, never a generic example.")
 		b.WriteString(" Never include estate hostnames or identifiers in documentation search queries.")
 	}
 	if len(gatedTools) == 1 {
