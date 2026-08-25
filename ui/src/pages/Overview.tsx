@@ -163,7 +163,7 @@ export function Overview() {
                 <div className="item-row" key={item.id}>
                   <div className="item-row__content stack stack--tight">
                     <Link className="table-link" to={`/investigations/${encodeURIComponent(item.id)}`}>
-                      {item.question}
+                      {item.title}
                     </Link>
                     <span className="subtle">started {relativeTime(item.started_at)}</span>
                   </div>

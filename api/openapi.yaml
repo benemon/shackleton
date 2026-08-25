@@ -370,11 +370,14 @@ components:
     Summary:
       type: object
       additionalProperties: false
-      required: [id, question, trigger, status, started_at, ended_at]
+      required: [id, question, title, trigger, status, started_at, ended_at]
       properties:
         id:
           type: string
         question:
+          type: string
+        title:
+          description: Bounded human name for list rows and headers; alerts carry the alertname, sweeps the sweep name, questions their first line.
           type: string
         trigger:
           type: string

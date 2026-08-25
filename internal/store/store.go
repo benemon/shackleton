@@ -107,6 +107,7 @@ type Event struct {
 type Summary struct {
 	ID        string    `json:"id"`
 	Question  string    `json:"question"`
+	Title     string    `json:"title"`
 	Trigger   string    `json:"trigger"`
 	Status    string    `json:"status"`
 	StartedAt time.Time `json:"started_at"`

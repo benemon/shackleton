@@ -58,6 +58,7 @@ test('while loading the list shows a spinner and zeroed tabs, never a fake table
   const markup = renderToStaticMarkup(React.createElement(MemoryRouter, null, React.createElement(Investigations)))
   assert.match(markup, />Investigations</)
   assert.match(markup, /Questions \(0\)/)
+  assert.match(markup, /Alerts \(0\)/)
   assert.match(markup, /Sweeps \(0\)/)
   assert.match(markup, /pf-v6-c-spinner/)
   assert.doesNotMatch(markup, /aria-label="questions investigations"/)
@@ -106,7 +107,21 @@ test('the detail page pins its verdict placeholders and failure alert', () => {
 
 test('the list pins its empty and failure copy', () => {
   assert.match(source, /titleText="No investigations match these filters"/)
-  assert.match(source, /tab === 'questions' \? 'No questions yet' : 'No sweeps yet'/)
+  assert.match(source, /tab === 'questions' \? 'No questions yet' : tab === 'alerts' \? 'No alerts yet' : 'No sweeps yet'/)
   assert.match(source, /<Alert variant="danger" title="Could not load investigations">/)
   assert.match(source, /error === '' && <PageLoading \/>/)
+})
+
+test('tabs split by trigger and rows link through the derived title', () => {
+  // Questions exclude both symptomatic prefixes; alerts and sweeps match theirs exactly.
+  assert.match(source, /!item\.trigger\.startsWith\('sweep:'\) && !item\.trigger\.startsWith\('alert:'\)/)
+  assert.match(source, /item\.trigger\.startsWith\('alert:'\)/)
+  assert.match(source, /\{item\.title\}/)
+  assert.doesNotMatch(source, /\{item\.question\}/)
+})
+
+test('the detail header uses the title and keeps the question readable in full', () => {
+  assert.match(source, /title=\{summary\.title\}/)
+  assert.match(source, /<pre className="mono-pre">\{summary\.question\}<\/pre>/)
+  assert.match(source, /toggleTextCollapsed="Show the question as written"/)
 })

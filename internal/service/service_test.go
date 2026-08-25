@@ -607,6 +607,26 @@ func TestHTTPCreateGetListRoundTrip(t *testing.T) {
 	if len(listed) != 1 || listed[0].ID != created.ID || listed[0].Status != "completed" {
 		t.Fatalf("listed summaries = %+v", listed)
 	}
+	if listed[0].Title != "round trip" {
+		t.Fatalf("listed title = %q", listed[0].Title)
+	}
+}
+
+func TestDisplayTitle(t *testing.T) {
+	long := strings.Repeat("x", 100)
+	for _, tc := range []struct {
+		name, question, trigger, want string
+	}{
+		{"alert carries the alertname", "Alertmanager alert firing: OdfNodeMtuLessThan9000.\nLabels:\n  severity: warning", "alert:abc123", "OdfNodeMtuLessThan9000"},
+		{"unparseable alert question falls back to the headline", "something else entirely\nsecond line", "alert:abc123", "something else entirely"},
+		{"sweep carries the sweep name", "Check every filesystem on every host…", "sweep:node-fs", "node-fs"},
+		{"question keeps its first line", "Is the cluster healthy?\nCheck operators too.", "telegram", "Is the cluster healthy?"},
+		{"long question is bounded", long + "\nrest", "api", strings.Repeat("x", 80) + "…"},
+	} {
+		if got := displayTitle(tc.question, tc.trigger); got != tc.want {
+			t.Errorf("%s: displayTitle = %q, want %q", tc.name, got, tc.want)
+		}
+	}
 }
 
 func TestSSEFlushesLiveEventBeforeTerminal(t *testing.T) {

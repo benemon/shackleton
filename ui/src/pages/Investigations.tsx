@@ -8,6 +8,7 @@ import {
   DrawerPanelContent,
   EmptyState,
   EmptyStateBody,
+  ExpandableSection,
   Label,
   SearchInput,
   Tab,
@@ -192,7 +193,7 @@ export function InvestigationDetail() {
             ) : (
               <>
                 <PageHeader
-                  title={summary.question}
+                  title={summary.title}
                   subtitle="Investigation record"
                   eyebrow={<Link to="/investigations">← All investigations</Link>}
                 />
@@ -207,6 +208,17 @@ export function InvestigationDetail() {
                     {drawerOpen ? 'Hide event stream' : 'Show event stream'}
                   </Button>
                 </div>
+
+                <Panel>
+                  <div className="panel__body">
+                    <ExpandableSection
+                      toggleTextCollapsed="Show the question as written"
+                      toggleTextExpanded="Hide the question"
+                    >
+                      <pre className="mono-pre">{summary.question}</pre>
+                    </ExpandableSection>
+                  </div>
+                </Panel>
 
                 {summary.verdict === undefined ? (
                   <Panel>
@@ -278,7 +290,7 @@ export function InvestigationDetail() {
 export function Investigations() {
   const navigate = useNavigate();
   const [items, setItems] = useState<Summary[] | null>(null);
-  const [tab, setTab] = useState<'questions' | 'sweeps'>('questions');
+  const [tab, setTab] = useState<'questions' | 'alerts' | 'sweeps'>('questions');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
   const [verdictFilter, setVerdictFilter] = useState<string[]>([]);
@@ -294,12 +306,18 @@ export function Investigations() {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  const questions = items?.filter((item) => !item.trigger.startsWith('sweep')) ?? [];
-  const sweeps = items?.filter((item) => item.trigger.startsWith('sweep')) ?? [];
-  const tabItems = tab === 'questions' ? questions : sweeps;
+  const questions = items?.filter((item) => !item.trigger.startsWith('sweep:') && !item.trigger.startsWith('alert:')) ?? [];
+  const alerts = items?.filter((item) => item.trigger.startsWith('alert:')) ?? [];
+  const sweeps = items?.filter((item) => item.trigger.startsWith('sweep:')) ?? [];
+  const tabItems = tab === 'questions' ? questions : tab === 'alerts' ? alerts : sweeps;
   const normalizedQuery = query.trim().toLowerCase();
   const visible = tabItems.filter((item) => {
-    if (normalizedQuery !== '' && !item.question.toLowerCase().includes(normalizedQuery)) return false;
+    if (
+      normalizedQuery !== '' &&
+      !item.question.toLowerCase().includes(normalizedQuery) &&
+      !item.title.toLowerCase().includes(normalizedQuery)
+    )
+      return false;
     if (statusFilter.length > 0 && !statusFilter.includes(item.status)) return false;
     const verdict = item.verdict?.verdict ?? 'none';
     return verdictFilter.length === 0 || verdictFilter.includes(verdict);
@@ -332,10 +350,13 @@ export function Investigations() {
       <div className="tab-strip">
         <Tabs
           activeKey={tab}
-          onSelect={(_event, key) => setTab(String(key) === 'sweeps' ? 'sweeps' : 'questions')}
+          onSelect={(_event, key) =>
+            setTab(String(key) === 'sweeps' ? 'sweeps' : String(key) === 'alerts' ? 'alerts' : 'questions')
+          }
           aria-label="Investigation categories"
         >
           <Tab eventKey="questions" title={<TabTitleText>Questions ({questions.length})</TabTitleText>} />
+          <Tab eventKey="alerts" title={<TabTitleText>Alerts ({alerts.length})</TabTitleText>} />
           <Tab eventKey="sweeps" title={<TabTitleText>Sweeps ({sweeps.length})</TabTitleText>} />
         </Tabs>
       </div>
@@ -343,8 +364,8 @@ export function Investigations() {
         <SearchInput
           className="filter-toolbar__search"
           value={query}
-          placeholder="Filter by question"
-          aria-label="Filter investigations by question"
+          placeholder="Filter by title or question"
+          aria-label="Filter investigations by title or question"
           onChange={(_event, value) => setQuery(value)}
           onClear={() => setQuery('')}
         />
@@ -394,18 +415,24 @@ export function Investigations() {
             <EmptyStateBody>Widen the state filters or clear the search.</EmptyStateBody>
           </EmptyState>
         ) : tabItems.length === 0 ? (
-          <EmptyState titleText={tab === 'questions' ? 'No questions yet' : 'No sweeps yet'} headingLevel="h2" variant="sm">
+          <EmptyState
+            titleText={tab === 'questions' ? 'No questions yet' : tab === 'alerts' ? 'No alerts yet' : 'No sweeps yet'}
+            headingLevel="h2"
+            variant="sm"
+          >
             <EmptyStateBody>
               {tab === 'questions'
-                ? 'New questions and alerts will appear here.'
-                : 'Scheduled investigations will appear here after they run.'}
+                ? 'New questions will appear here.'
+                : tab === 'alerts'
+                  ? 'Alert-triggered investigations will appear here.'
+                  : 'Scheduled investigations will appear here after they run.'}
             </EmptyStateBody>
           </EmptyState>
         ) : (
           <Table variant="compact" aria-label={`${tab} investigations`}>
             <Thead>
               <Tr>
-                <Th>{tab === 'sweeps' ? 'Sweep' : 'Question'}</Th>
+                <Th>{tab === 'sweeps' ? 'Sweep' : tab === 'alerts' ? 'Alert' : 'Question'}</Th>
                 <Th>Trigger</Th>
                 <Th>Status</Th>
                 <Th>Verdict</Th>
@@ -419,9 +446,9 @@ export function Investigations() {
                   isClickable
                   onRowClick={() => navigate(`/investigations/${encodeURIComponent(item.id)}`)}
                 >
-                  <Td dataLabel="Question">
+                  <Td dataLabel={tab === 'sweeps' ? 'Sweep' : tab === 'alerts' ? 'Alert' : 'Question'}>
                     <Link className="table-link" to={`/investigations/${encodeURIComponent(item.id)}`}>
-                      {item.question}
+                      {item.title}
                     </Link>
                   </Td>
                   <Td dataLabel="Trigger">

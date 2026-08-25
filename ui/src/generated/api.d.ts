@@ -270,6 +270,8 @@ export interface components {
         Summary: {
             id: string;
             question: string;
+            /** @description Bounded human name for list rows and headers; alerts carry the alertname, sweeps the sweep name, questions their first line. */
+            title: string;
             trigger: string;
             /** @enum {string} */
             status: "running" | "completed" | "failed";

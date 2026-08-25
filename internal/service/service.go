@@ -412,6 +412,23 @@ func symptomIdentity(id, question, trigger string) (string, string, kb.Symptom) 
 	}
 }
 
+// displayTitle names an investigation on human surfaces; the question
+// stays the full record of what was asked.
+func displayTitle(question, trigger string) string {
+	switch {
+	case strings.HasPrefix(trigger, "alert:"):
+		if rest, ok := strings.CutPrefix(question, "Alertmanager alert firing: "); ok {
+			if name, _, found := strings.Cut(rest, "."); found && name != "" {
+				return name
+			}
+		}
+	case strings.HasPrefix(trigger, "sweep:"):
+		return strings.TrimPrefix(trigger, "sweep:")
+	}
+	headline, _, _ := strings.Cut(question, "\n")
+	return truncate(headline, 80)
+}
+
 func slugify(value string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(value) {
@@ -573,7 +590,11 @@ func (s *Service) GetInvestigation(id string) (store.Summary, []store.Event, err
 }
 
 func (s *Service) ListInvestigations() []store.Summary {
-	return s.store.List()
+	summaries := s.store.List()
+	for i := range summaries {
+		summaries[i].Title = displayTitle(summaries[i].Question, summaries[i].Trigger)
+	}
+	return summaries
 }
 
 func (s *Service) FollowInvestigation(id string) ([]store.Event, <-chan store.Event, func(), error) {
@@ -774,6 +795,7 @@ func (s *Service) Wait() {
 func (s *Service) summary(id string) store.Summary {
 	for _, summary := range s.store.List() {
 		if summary.ID == id {
+			summary.Title = displayTitle(summary.Question, summary.Trigger)
 			return summary
 		}
 	}
