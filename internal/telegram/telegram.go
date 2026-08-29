@@ -327,25 +327,32 @@ func (t *Trigger) handleMessage(ctx context.Context, message message) {
 	if strings.TrimSpace(message.Text) == "" || strings.HasPrefix(message.Text, "/") {
 		return
 	}
-	if message.ReplyTo != nil && saveIntent.MatchString(message.Text) {
-		t.mu.Lock()
-		id, known := t.answers[message.ReplyTo.MessageID]
-		t.mu.Unlock()
-		if known {
-			slug, err := t.service.SaveInvestigationToKB(id)
-			text := ""
-			if err != nil {
-				text = err.Error()
-			} else {
-				text = "Saved as draft article " + slug + " -- review and approve it in the console."
-			}
-			if _, err := t.bot.sendMessage(ctx, message.Chat.ID, text, "", nil); err != nil {
-				log.Printf("telegram send knowledge-base result: %v", err)
-			}
-			return
+	prior, isReply := t.resolveReply(message.ReplyTo)
+	if isReply && saveIntent.MatchString(message.Text) {
+		slug, err := t.service.SaveInvestigationToKB(prior)
+		text := ""
+		if err != nil {
+			text = err.Error()
+		} else {
+			text = "Saved as draft article " + slug + " -- review and approve it in the console."
 		}
+		if _, err := t.bot.sendMessage(ctx, message.Chat.ID, text, "", nil); err != nil {
+			log.Printf("telegram send knowledge-base result: %v", err)
+		}
+		return
 	}
-	summary, err := t.service.CreateInvestigation(ctx, message.Text, "telegram")
+	var summary store.Summary
+	var err error
+	if isReply {
+		summary, err = t.service.CreateFollowUp(ctx, message.Text, "telegram", prior)
+		if errors.Is(err, service.ErrInvestigationNotFound) {
+			// A stale reference (restart, evicted mapping) degrades to a
+			// plain question rather than silence.
+			summary, err = t.service.CreateInvestigation(ctx, message.Text, "telegram")
+		}
+	} else {
+		summary, err = t.service.CreateInvestigation(ctx, message.Text, "telegram")
+	}
 	if err != nil {
 		log.Printf("telegram create investigation: %v", err)
 		return
@@ -458,6 +465,26 @@ func (t *Trigger) sendTerminal(ctx context.Context, chatID int64, id string, eve
 // knowledgebase article") inside a reply; bare "kb" and "article" stay
 // unclaimed because follow-up questions use them constantly.
 var saveIntent = regexp.MustCompile(`(?i)\b(save|knowledge[ -]?base)\b`)
+
+// investigationRef matches the trailing "(id)" that verdict notifications
+// carry, so replies to notifications resolve without a message mapping.
+var investigationRef = regexp.MustCompile(`\((\d{8}-\d{6}-[A-Za-z0-9_-]+)\)\s*$`)
+
+func (t *Trigger) resolveReply(reply *message) (string, bool) {
+	if reply == nil {
+		return "", false
+	}
+	t.mu.Lock()
+	id, known := t.answers[reply.MessageID]
+	t.mu.Unlock()
+	if known {
+		return id, true
+	}
+	if m := investigationRef.FindStringSubmatch(reply.Text); m != nil {
+		return m[1], true
+	}
+	return "", false
+}
 
 const answerCap = 256
 

@@ -582,29 +582,45 @@ func TestTriggerReplySavesKnownAnswerToKB(t *testing.T) {
 	}
 }
 
-func TestTriggerNonSaveAndUnknownRepliesCreateInvestigations(t *testing.T) {
+func TestTriggerRepliesResolveToFollowUps(t *testing.T) {
 	audit, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := service.New(t.Context(), audit, nil, completedFactory(t, "answer"))
+	svc := service.New(t.Context(), audit, nil, completedFactory(t, "node2 /var is filling"))
 	client, _ := testBot(t)
-	trigger := &Trigger{bot: client, service: svc, chats: map[int64]*chatRole{7: {qa: true}}, answers: map[int64]string{42: "known"}}
-	trigger.handleMessage(t.Context(), message{Text: "What about logs?", ReplyTo: &message{MessageID: 42}, Chat: chat{ID: 7}, From: user{ID: 7}})
-	// Bare "kb" stays a follow-up question even on a known answer.
-	trigger.handleMessage(t.Context(), message{Text: "check the redhat kb for this", ReplyTo: &message{MessageID: 42}, Chat: chat{ID: 7}, From: user{ID: 7}})
-	trigger.handleMessage(t.Context(), message{Text: "save this", ReplyTo: &message{MessageID: 99}, Chat: chat{ID: 7}, From: user{ID: 7}})
+	prior, err := svc.CreateInvestigation(t.Context(), "What is using /var?", "telegram")
+	if err != nil {
+		t.Fatal(err)
+	}
 	svc.Wait()
-	investigations := svc.ListInvestigations()
-	if len(investigations) != 3 {
-		t.Fatalf("investigations = %+v", investigations)
+	trigger := &Trigger{bot: client, service: svc, chats: map[int64]*chatRole{7: {qa: true}}, answers: map[int64]string{42: prior.ID}}
+
+	// A mapped reply becomes a follow-up carrying the prior answer; bare
+	// "kb" is a follow-up, never a save.
+	trigger.handleMessage(t.Context(), message{Text: "check the redhat kb for this", ReplyTo: &message{MessageID: 42}, Chat: chat{ID: 7}, From: user{ID: 7}})
+	// A notification-style reply resolves through its trailing "(id)".
+	trigger.handleMessage(t.Context(), message{Text: "And on node3?", ReplyTo: &message{MessageID: 555, Text: "ATTENTION: /var pressure\n(" + prior.ID + ")"}, Chat: chat{ID: 7}, From: user{ID: 7}})
+	// Unresolvable and stale references degrade to plain questions.
+	trigger.handleMessage(t.Context(), message{Text: "plain reply", ReplyTo: &message{MessageID: 99}, Chat: chat{ID: 7}, From: user{ID: 7}})
+	trigger.handleMessage(t.Context(), message{Text: "stale reply", ReplyTo: &message{MessageID: 98, Text: "gone\n(20990101-000000-missing)"}, Chat: chat{ID: 7}, From: user{ID: 7}})
+	svc.Wait()
+
+	questions := map[string]string{}
+	for _, investigation := range svc.ListInvestigations() {
+		headline, _, _ := strings.Cut(investigation.Question, "\n")
+		questions[headline] = investigation.Question
 	}
-	questions := map[string]bool{}
-	for _, investigation := range investigations {
-		questions[investigation.Question] = true
+	for _, headline := range []string{"check the redhat kb for this", "And on node3?"} {
+		full := questions[headline]
+		if !strings.Contains(full, "(Follow-up to investigation "+prior.ID+".)") || !strings.Contains(full, "node2 /var is filling") {
+			t.Fatalf("%q did not become a follow-up:\n%s", headline, full)
+		}
 	}
-	if !questions["What about logs?"] || !questions["check the redhat kb for this"] || !questions["save this"] {
-		t.Fatalf("questions = %+v", questions)
+	for _, headline := range []string{"plain reply", "stale reply"} {
+		if questions[headline] != headline {
+			t.Fatalf("%q should be a plain question: %q", headline, questions[headline])
+		}
 	}
 }
 

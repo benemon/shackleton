@@ -651,6 +651,52 @@ func TestHTTPSaveInvestigationToKB(t *testing.T) {
 	}
 }
 
+func TestCreateFollowUpThreadsPriorContext(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := "node2 /var is filling\n```json\n{\"verdict\":\"attention\",\"summary\":\"/var pressure\",\"evidence\":[]}\n```\n"
+	svc := New(context.Background(), audit, nil, completedRunnerFactory(t, answer))
+	prior, err := svc.CreateInvestigation(context.Background(), "What is using the space on /var?\nsecond line", "telegram")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	followUp, err := svc.CreateFollowUp(context.Background(), "Run oc debug on node2", "telegram", prior.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Wait()
+	got, _, err := svc.GetInvestigation(followUp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got.Question, "Run oc debug on node2\n") {
+		t.Fatalf("follow-up question must lead with the reply: %q", got.Question)
+	}
+	for _, want := range []string{
+		"(Follow-up to investigation " + prior.ID + ".)",
+		"Prior question: What is using the space on /var?",
+		"Prior answer:\nnode2 /var is filling",
+		"verify current state yourself",
+	} {
+		if !strings.Contains(got.Question, want) {
+			t.Fatalf("follow-up question missing %q:\n%s", want, got.Question)
+		}
+	}
+	if strings.Contains(got.Question, "```json") {
+		t.Fatalf("verdict block leaked into follow-up context: %q", got.Question)
+	}
+	if got.Title != "Run oc debug on node2" {
+		t.Fatalf("title = %q", got.Title)
+	}
+
+	if _, err := svc.CreateFollowUp(context.Background(), "anything", "telegram", "20990101-000000-missing"); !errors.Is(err, ErrInvestigationNotFound) {
+		t.Fatalf("unknown prior error = %v", err)
+	}
+}
+
 func TestDisplayTitle(t *testing.T) {
 	long := strings.Repeat("x", 100)
 	for _, tc := range []struct {
@@ -665,6 +711,48 @@ func TestDisplayTitle(t *testing.T) {
 		if got := displayTitle(tc.question, tc.trigger); got != tc.want {
 			t.Errorf("%s: displayTitle = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestHTTPFollowUpCreateAndUnknownPrior(t *testing.T) {
+	audit, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(context.Background(), audit, testConfig(t), completedRunnerFactory(t, "prior answer"))
+	handler := NewHTTP(service, "token")
+	request := httptest.NewRequest(http.MethodPost, "/v1/investigations", strings.NewReader(`{"question":"first"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var created store.Summary
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	service.Wait()
+
+	request = httptest.NewRequest(http.MethodPost, "/v1/investigations", strings.NewReader(`{"question":"follow","follow_up_to":"`+created.ID+`"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("follow-up status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var followUp store.Summary
+	if err := json.Unmarshal(response.Body.Bytes(), &followUp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(followUp.Question, "(Follow-up to investigation "+created.ID+".)") {
+		t.Fatalf("follow-up question = %q", followUp.Question)
+	}
+	service.Wait()
+
+	request = httptest.NewRequest(http.MethodPost, "/v1/investigations", strings.NewReader(`{"question":"x","follow_up_to":"20990101-000000-missing"}`))
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unknown prior status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 

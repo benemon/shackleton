@@ -118,8 +118,9 @@ func bearerAuth(next http.Handler, token string) http.Handler {
 
 func (s *Service) createInvestigation(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Question string `json:"question"`
-		Trigger  string `json:"trigger"`
+		Question   string `json:"question"`
+		Trigger    string `json:"trigger"`
+		FollowUpTo string `json:"follow_up_to"`
 	}
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -132,7 +133,17 @@ func (s *Service) createInvestigation(w http.ResponseWriter, r *http.Request) {
 	if request.Trigger == "" {
 		request.Trigger = "api"
 	}
-	summary, err := s.CreateInvestigation(r.Context(), request.Question, request.Trigger)
+	var summary store.Summary
+	var err error
+	if request.FollowUpTo != "" {
+		summary, err = s.CreateFollowUp(r.Context(), request.Question, request.Trigger, request.FollowUpTo)
+	} else {
+		summary, err = s.CreateInvestigation(r.Context(), request.Question, request.Trigger)
+	}
+	if errors.Is(err, ErrInvestigationNotFound) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

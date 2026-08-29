@@ -281,6 +281,8 @@ export interface components {
             question: string;
             /** @default api */
             trigger: string;
+            /** @description Prior investigation id whose question and answer are threaded into this one as context. */
+            follow_up_to?: string;
         };
         SaveInvestigationToKBResponse: {
             slug: string;
@@ -642,6 +644,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalError"];
         };
     };

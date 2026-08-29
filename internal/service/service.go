@@ -660,6 +660,29 @@ func (s *Service) SaveInvestigationToKB(id string) (string, error) {
 	return slug, nil
 }
 
+// CreateFollowUp threads a prior investigation's question and answer into a
+// new one, so a conversational reply carries its referent.
+func (s *Service) CreateFollowUp(ctx context.Context, question, trigger, priorID string) (store.Summary, error) {
+	prior := s.summary(priorID)
+	if prior.ID == "" {
+		return store.Summary{}, ErrInvestigationNotFound
+	}
+	headline, _, _ := strings.Cut(prior.Question, "\n")
+	var b strings.Builder
+	b.WriteString(question)
+	b.WriteString("\n\n(Follow-up to investigation " + priorID + ".)\n")
+	b.WriteString("Prior question: " + truncate(headline, 200) + "\n")
+	answer := strings.TrimSpace(store.StripVerdictBlock(prior.Answer))
+	if answer == "" && prior.Verdict != nil {
+		answer = prior.Verdict.Verdict + ": " + prior.Verdict.Summary
+	}
+	if answer != "" {
+		b.WriteString("Prior answer:\n" + truncate(answer, 4000) + "\n")
+	}
+	b.WriteString("Answer the operator's follow-up; verify current state yourself rather than trusting the prior answer.")
+	return s.CreateInvestigation(ctx, b.String(), trigger)
+}
+
 func (s *Service) ListInvestigations() []store.Summary {
 	summaries := s.store.List()
 	for i := range summaries {
