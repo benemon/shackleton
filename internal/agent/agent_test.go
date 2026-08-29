@@ -72,6 +72,10 @@ func TestSystemPrompt(t *testing.T) {
 	if !strings.Contains(got, "re-run the check that motivated it and state whether the symptom cleared") {
 		t.Errorf("verification sentence missing: %q", got)
 	}
+	if !strings.Contains(got, "executed without error is done") ||
+		!strings.Contains(got, "never propose the same action again") {
+		t.Errorf("accepted-vs-achieved sentence missing: %q", got)
+	}
 	if !strings.Contains(got, "Evidence must quote values you actually read from tool results") ||
 		!strings.Contains(got, "never assert a number or a state you did not observe") {
 		t.Errorf("anti-fabrication sentence missing: %q", got)
@@ -600,6 +604,37 @@ func TestPreflightRejectsUnknownTargetBeforeApproval(t *testing.T) {
 	}
 	if metrics.ToolErrors != 1 {
 		t.Fatalf("metrics = %+v", metrics)
+	}
+}
+
+func TestReproposedGatedCallShortCircuitsAfterApply(t *testing.T) {
+	var executed []string
+	approver := &recordingApprover{}
+	completion := 0
+	runner := Runner{
+		Tools: gatedHostRegistry(t, &executed), Approver: approver, Targets: fakeResolver{},
+		Complete: func(_ context.Context, history []openai.ChatCompletionMessageParamUnion, _ []openai.ChatCompletionToolUnionParam) (ModelMessage, error) {
+			completion++
+			// Propose the identical gated call twice, as the model does when
+			// an async mutation's effect is not yet observable.
+			if completion <= 2 {
+				return ModelMessage{ToolCalls: []ModelToolCall{{Name: "run_host_command", Arguments: `{"host":"nas","command":["patch"]}`, ID: fmt.Sprint(completion)}}}, nil
+			}
+			toolText := history[len(history)-1].OfTool.Content.OfString.Value
+			if !strings.Contains(toolText, "Already applied this investigation") {
+				t.Fatalf("second proposal was not short-circuited: %q", toolText)
+			}
+			return ModelMessage{Content: "done"}, nil
+		},
+	}
+	if _, err := runner.Run(context.Background(), "question", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(approver.calls) != 1 {
+		t.Fatalf("identical gated call raised %d approvals, want 1", len(approver.calls))
+	}
+	if len(executed) != 1 {
+		t.Fatalf("gated tool executed %d times, want 1", len(executed))
 	}
 }
 

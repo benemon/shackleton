@@ -46,7 +46,7 @@ func SystemPrompt(preamble, environment string, metricsTools, logsTools, knowled
 	if len(gatedTools) > 0 {
 		b.WriteString(" To propose an action, CALL the gated tool — the call itself is the proposal and the operator decides at the approval gate; never describe an action and ask permission in prose.")
 	}
-	b.WriteString(" Do not repeat a lookup you already ran. If the operator denies a proposed action, report the denial as an operator decision and do not invent a reason for it. If an approved action executes, re-run the check that motivated it and state whether the symptom cleared. After a few tool calls, stop and give your best concise answer.")
+	b.WriteString(" Do not repeat a lookup you already ran. If the operator denies a proposed action, report the denial as an operator decision and do not invent a reason for it. If an approved action executes, re-run the check that motivated it and state whether the symptom cleared. A gated action that executed without error is done: if its effect is not yet observable — an upgrade or rollout still in progress — report it as initiated and in progress, and never propose the same action again. After a few tool calls, stop and give your best concise answer.")
 	b.WriteString(" Evidence must quote values you actually read from tool results in this investigation; when you could not read a value, say so plainly — never assert a number or a state you did not observe.")
 	b.WriteString(" End your final answer with a fenced json block of exactly this shape:\n```json\n{\"verdict\":\"healthy\",\"summary\":\"<one line>\",\"evidence\":[\"<item>\"]}\n```\nverdict must be healthy, attention, or action. Use healthy only when nothing needs attention. If an approved action was executed, also include \"resolution\":\"cleared\" or \"resolution\":\"persisting\" in the block, based on re-checking the signal that motivated the action.")
 	return b.String()
@@ -125,6 +125,12 @@ type Runner struct {
 	CallTimeout          time.Duration
 	InvestigationTimeout time.Duration
 	Events               EventSink
+
+	// applied keys gated calls that already executed successfully this run, so
+	// an identical re-proposal short-circuits instead of raising a second
+	// approval — an async mutation's effect may not be observable yet, which
+	// the model otherwise mistakes for failure and re-proposes.
+	applied map[string]bool
 }
 
 func (r *Runner) Run(ctx context.Context, question, expectFirstTool string) (metrics Metrics, err error) {
@@ -316,7 +322,13 @@ func (r *Runner) handleCall(ctx context.Context, raw ModelToolCall, timeout time
 		}
 	}
 	call := ToolCall{Name: raw.Name, ArgsJSON: raw.Arguments, Args: args, ID: raw.ID, Human: humanRendering(raw.Name, args)}
+	appliedKey := ""
 	if entry.gated {
+		canonical, _ := json.Marshal(args)
+		appliedKey = call.Name + "\x00" + string(canonical)
+		if r.applied[appliedKey] {
+			return callResult{"Already applied this investigation: " + call.Human + ". The change is in effect; report progress rather than proposing it again.", args, false, false}
+		}
 		if r.Approver == nil {
 			return callResult{"Tool error: approval is required but no approver is configured.", args, false, true}
 		}
@@ -345,6 +357,12 @@ func (r *Runner) handleCall(ctx context.Context, raw ModelToolCall, timeout time
 	if err != nil {
 		metrics.ToolErrors++
 		return callResult{"Tool error: " + err.Error(), args, false, true}
+	}
+	if appliedKey != "" {
+		if r.applied == nil {
+			r.applied = make(map[string]bool)
+		}
+		r.applied[appliedKey] = true
 	}
 	return callResult{result, args, false, false}
 }
